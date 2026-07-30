@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+
+# Secrets
+.env
+*.pem
+*.key
+
+# State — never commit
+*.db
+*.sqlite
+*.sqlite3
+checkpoints/
+
+# OS
+.DS_Store

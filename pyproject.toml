@@ -1,0 +1,15 @@
+[tool.uv.workspace]
+members = ["apps/*", "libs/connectors/*"]
+
+[dependency-groups]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["apps", "libs"]
