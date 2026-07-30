@@ -10,6 +10,7 @@ dependencies = [
     "langgraph>=1.0.10",
     "langgraph-checkpoint-sqlite>=3.0.1",
     "langchain-core>=1.2.22",
+    "claude-agent-sdk>=0.2.128",
 ]
 
 [build-system]

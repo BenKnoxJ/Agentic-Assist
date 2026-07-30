@@ -1,18 +1,21 @@
 """Gojo - the orchestrator. Routes, holds state, enforces the gate.
 
-Not an agent: no LLM calls, no reasoning. It decides which agent runs
+Not an agent: no reasoning happens here. It decides which agent runs
 and what happens with the result.
 """
 
+import asyncio
+
 from langgraph.graph import END, START, StateGraph
 
+from gojo.agents.megumi import gather
 from gojo.state import GojoState
 
 ACTION_WORDS = ("send", "reply", "create", "update", "close", "delete", "assign")
 
 
 def classify(state: GojoState) -> dict:
-    """Deterministic intent classification. Becomes a cheap LLM call later."""
+    """Deterministic intent classification. Kept deterministic on purpose."""
     text = state["message"].lower()
     intent = "act" if any(w in text for w in ACTION_WORDS) else "gather"
     print(f"[classify] intent={intent}")
@@ -24,10 +27,11 @@ def route_by_intent(state: GojoState) -> str:
     return state["intent"]
 
 
-def megumi(state: GojoState) -> dict:
-    """Gather agent - read-only. Stub."""
-    print("[megumi] gathering (stub)")
-    return {"findings": ["stub finding"], "steps": ["megumi"]}
+async def megumi(state: GojoState) -> dict:
+    """Gather agent - read-only. Delegates to the Agent SDK."""
+    print("[megumi] gathering")
+    findings = await gather(state["message"])
+    return {"findings": [findings], "steps": ["megumi"]}
 
 
 def sukuna(state: GojoState) -> dict:
@@ -39,10 +43,9 @@ def sukuna(state: GojoState) -> dict:
 def respond(state: GojoState) -> dict:
     """Format the reply. A node, not an agent - one call, no tools."""
     print("[respond] composing")
-    return {
-        "reply": f"[{state['intent']}] {len(state['findings'])} findings",
-        "steps": ["respond"],
-    }
+    findings = state["findings"]
+    body = findings[0] if findings else "(no findings)"
+    return {"reply": body, "steps": ["respond"]}
 
 
 def build_graph():
@@ -67,8 +70,14 @@ def build_graph():
     return builder.compile()
 
 
-if __name__ == "__main__":
+async def main() -> None:
     graph = build_graph()
     for msg in ["what needs my attention today", "send a reply to Dave"]:
-        print(f"\n--- {msg!r} ---")
-        print(graph.invoke({"message": msg, "steps": [], "findings": []}))
+        print(f"\n--- {msg} ---")
+        result = await graph.ainvoke({"message": msg, "steps": [], "findings": []})
+        print("REPLY:", result["reply"])
+        print("PATH:", result["steps"])
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
