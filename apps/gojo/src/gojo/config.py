@@ -39,6 +39,22 @@ class Settings(BaseSettings):
     teams_tenant_id: str = ""
     teams_client_secret: SecretStr = SecretStr("")
 
+    # Comma-separated Entra object IDs allowed to talk to Gojo.
+    #
+    # JWT validation proves a request came from Azure Bot Service for our bot.
+    # It says nothing about who typed it - any tenant user who installs the app
+    # produces perfectly valid tokens. This is the check that makes Gojo single
+    # -user in fact and not just in intent (1.3: one user, one tenant).
+    #
+    # Empty means nobody is authorised. Deliberate: an unset allow-list should
+    # lock the door, not remove it.
+    allowed_user_ids: str = ""
+
+    @property
+    def allowed_users(self) -> frozenset[str]:
+        """Entra object IDs permitted to use the assistant."""
+        return frozenset(u.strip() for u in self.allowed_user_ids.split(",") if u.strip())
+
     @property
     def teams_configured(self) -> bool:
         """True when the Teams surface has everything it needs to authenticate."""

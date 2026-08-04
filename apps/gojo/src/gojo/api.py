@@ -83,9 +83,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # it fails closed, but it fails.
         app.state.agent_configuration = auth
         app.state.agent_app = build_agent_app(
-            adapter, app.state.graph, settings.teams_client_id, connections
+            adapter,
+            app.state.graph,
+            settings.teams_client_id,
+            connections,
+            settings.allowed_users,
+            settings.teams_tenant_id,
         )
-        logger.info("Teams surface enabled for tenant %s", settings.teams_tenant_id)
+        logger.info(
+            "Teams surface enabled for tenant %s, %d authorised user(s)",
+            settings.teams_tenant_id,
+            len(settings.allowed_users),
+        )
+        if not settings.allowed_users:
+            logger.warning(
+                "ALLOWED_USER_IDS is unset - every message will be refused. "
+                "Send one message and read the refusal log line for your object ID."
+            )
     else:
         logger.warning("Teams surface disabled - client id, tenant id or secret unset")
 

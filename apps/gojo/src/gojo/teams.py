@@ -30,6 +30,34 @@ from microsoft_agents.hosting.core import (
 logger = logging.getLogger(__name__)
 
 ACK = "On it — give me a moment."
+REFUSAL = "This assistant is private and isn't available to you."
+
+
+def is_authorised(
+    aad_object_id: str | None,
+    tenant_id: str | None,
+    allowed_users: frozenset[str],
+    expected_tenant: str,
+) -> bool:
+    """Whether this sender may use Gojo.
+
+    Two independent checks, both of which must pass:
+
+    1. The sender's Entra object ID is on the allow-list. A valid Bot Service
+       token proves the message came from our bot, not that an authorised
+       person sent it.
+    2. The conversation's tenant matches ours. Redundant with single-tenant
+       token validation, and kept because the cost is one comparison and the
+       failure it guards against is silent.
+
+    Fails closed on every missing value: no ID, no tenant, or an empty
+    allow-list all deny.
+    """
+    if not allowed_users or not aad_object_id:
+        return False
+    if expected_tenant and tenant_id != expected_tenant:
+        return False
+    return aad_object_id in allowed_users
 
 # asyncio holds only weak references to tasks, so a task nobody keeps can be
 # garbage-collected mid-flight. Holding them here is what stops a reply
@@ -37,7 +65,14 @@ ACK = "On it — give me a moment."
 _in_flight: set[asyncio.Task] = set()
 
 
-def build_agent_app(adapter, graph, agent_id: str, connections) -> AgentApplication:
+def build_agent_app(
+    adapter,
+    graph,
+    agent_id: str,
+    connections,
+    allowed_users: frozenset[str],
+    expected_tenant: str,
+) -> AgentApplication:
     """Wire the Teams surface onto an already-compiled graph.
 
     Args:
@@ -48,6 +83,8 @@ def build_agent_app(adapter, graph, agent_id: str, connections) -> AgentApplicat
             a token for the outbound call.
         connections: the MsalConnectionManager. The app builds its own
             Authorization from this and refuses to start without it.
+        allowed_users: Entra object IDs permitted to use Gojo. Empty denies all.
+        expected_tenant: the tenant every conversation must belong to.
     """
     # MemoryStorage holds the SDK's own conversation state, which is separate
     # from LangGraph's. In-process, so it does not survive a restart - matching
@@ -78,7 +115,24 @@ def build_agent_app(adapter, graph, agent_id: str, connections) -> AgentApplicat
 
     @app.activity(ActivityTypes.message)
     async def on_message(context: TurnContext, state: TurnState) -> bool:
-        """Acknowledge inside the timeout, then hand off to the graph."""
+        """Authorise, acknowledge inside the timeout, then hand off."""
+        sender = context.activity.from_property
+        aad_id = sender.aad_object_id if sender else None
+        tenant = context.activity.conversation.tenant_id if context.activity.conversation else None
+
+        if not is_authorised(aad_id, tenant, allowed_users, expected_tenant):
+            # Logged at WARNING with the object ID so an authorised user can be
+            # added without hunting through the portal - and so unauthorised
+            # attempts leave a trace rather than vanishing.
+            logger.warning(
+                "refused message from aad_object_id=%s name=%s tenant=%s",
+                aad_id,
+                sender.name if sender else None,
+                tenant,
+            )
+            await context.send_activity(REFUSAL)
+            return True
+
         # Captured before returning: once this turn ends the context is gone,
         # and the reference is the only way back to this conversation.
         reference = context.activity.get_conversation_reference()
