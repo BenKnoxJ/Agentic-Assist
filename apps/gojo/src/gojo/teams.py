@@ -139,7 +139,17 @@ def build_agent_app(
     # from LangGraph's. In-process, so it does not survive a restart - matching
     # ADR 0006's accepted gap. Step 4 is where persistence arrives for both.
     app = AgentApplication(
-        ApplicationOptions(adapter=adapter, storage=MemoryStorage()),
+        ApplicationOptions(
+            adapter=adapter,
+            storage=MemoryStorage(),
+            # ⚠ Defaults to True. The SDK then runs its own typing indicator
+            # on a background loop that re-sends via the reply-to-activity
+            # endpoint, which Teams rejects with 400 Bad Request - surfacing
+            # to the user as "Exception caught" while the turn itself
+            # succeeds. One explicit typing activity per turn instead: sent
+            # below, once, with no timer behind it.
+            start_typing_timer=False,
+        ),
         connection_manager=connections,
     )
 
