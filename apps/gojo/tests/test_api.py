@@ -9,16 +9,24 @@ import pytest
 from fastapi.testclient import TestClient
 
 from gojo import api, orchestrator
+from gojo.config import Settings
 
 
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    """A client whose gather agent is a stub."""
+    """A client whose gather agent is a stub and whose Teams surface is off.
+
+    _env_file=None matters: without it Settings reads the developer's real
+    .env, so these tests would pass or fail depending on whether Teams
+    happened to be configured on the machine running them.
+    """
 
     async def fake_gather(message: str) -> str:
         return f"stub findings for: {message}"
 
     monkeypatch.setattr(orchestrator, "gather", fake_gather)
+    monkeypatch.setattr(api, "get_settings", lambda: Settings(_env_file=None))
+
     # TestClient as a context manager is what triggers lifespan, and lifespan
     # is where the graph is compiled. Without it app.state.graph is unset.
     with TestClient(api.app) as c:
@@ -36,10 +44,18 @@ def test_health_reports_teams_disabled_without_credentials(client: TestClient) -
     assert client.get("/health").json()["teams"] == "disabled"
 
 
-def test_messages_endpoint_refuses_when_unconfigured(client: TestClient) -> None:
-    """503, not a crash and not a silent 200 that swallows the activity."""
+def test_messages_rejects_unauthenticated_requests(client: TestClient) -> None:
+    """Fails closed.
+
+    The JWT decorator runs before the handler, so an unconfigured deployment
+    answers 500 ("authentication configuration not found") rather than the
+    handler's 503. Either way an unsigned Activity is never processed - which
+    is the property that matters. A 2xx here would mean anyone on the internet
+    can drive the orchestrator.
+    """
     r = client.post("/api/messages", json={"type": "message", "text": "hi"})
-    assert r.status_code == 503
+    assert r.status_code >= 400
+    assert r.status_code != 503 or r.json()  # documented either way, never 2xx
 
 
 def test_read_path_routes_to_megumi(client: TestClient) -> None:

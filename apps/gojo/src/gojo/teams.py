@@ -19,7 +19,13 @@ import asyncio
 import logging
 
 from microsoft_agents.activity import ActivityTypes, ConversationReference
-from microsoft_agents.hosting.core import AgentApplication, TurnContext, TurnState
+from microsoft_agents.hosting.core import (
+    AgentApplication,
+    ApplicationOptions,
+    MemoryStorage,
+    TurnContext,
+    TurnState,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +37,7 @@ ACK = "On it — give me a moment."
 _in_flight: set[asyncio.Task] = set()
 
 
-def build_agent_app(adapter, graph, agent_id: str) -> AgentApplication:
+def build_agent_app(adapter, graph, agent_id: str, connections) -> AgentApplication:
     """Wire the Teams surface onto an already-compiled graph.
 
     Args:
@@ -40,8 +46,16 @@ def build_agent_app(adapter, graph, agent_id: str) -> AgentApplication:
         graph: the compiled orchestrator graph.
         agent_id: the Entra client ID. continue_conversation needs it to mint
             a token for the outbound call.
+        connections: the MsalConnectionManager. The app builds its own
+            Authorization from this and refuses to start without it.
     """
-    app = AgentApplication()
+    # MemoryStorage holds the SDK's own conversation state, which is separate
+    # from LangGraph's. In-process, so it does not survive a restart - matching
+    # ADR 0006's accepted gap. Step 4 is where persistence arrives for both.
+    app = AgentApplication(
+        ApplicationOptions(adapter=adapter, storage=MemoryStorage()),
+        connection_manager=connections,
+    )
 
     async def _reply_later(reference: ConversationReference, message: str) -> None:
         """Run the graph, then deliver the answer as a new outbound message."""

@@ -14,6 +14,10 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from microsoft_agents.hosting.fastapi import (
+    jwt_authorization_decorator,
+    start_agent_process,
+)
 from pydantic import BaseModel, Field
 
 from gojo.config import assert_subscription_auth, get_settings
@@ -66,12 +70,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             tenant_id=settings.teams_tenant_id,
             client_secret=settings.teams_client_secret.get_secret_value(),
         )
-        connections = MsalConnectionManager(connections_configurations={"SERVICE": auth})
+        # The key must be exactly "SERVICE_CONNECTION" - the manager looks it up
+        # by that literal name and raises if it is absent (connection_manager.py:98).
+        connections = MsalConnectionManager(
+            connections_configurations={"SERVICE_CONNECTION": auth}
+        )
         adapter = CloudAdapter(connection_manager=connections)
 
         app.state.adapter = adapter
+        # The JWT decorator reads the config from this exact attribute name.
+        # Without it every request is rejected 500 rather than validated -
+        # it fails closed, but it fails.
+        app.state.agent_configuration = auth
         app.state.agent_app = build_agent_app(
-            adapter, app.state.graph, settings.teams_client_id
+            adapter, app.state.graph, settings.teams_client_id, connections
         )
         logger.info("Teams surface enabled for tenant %s", settings.teams_tenant_id)
     else:
@@ -98,16 +110,23 @@ async def health() -> dict[str, object]:
 
 
 @app.post("/api/messages")
+@jwt_authorization_decorator
 async def messages(request: Request) -> Response:
     """Azure Bot Service posts Activities here.
 
-    The SDK validates the JWT - issuer and audience included - before this
-    handler sees anything. Do not add a hand-rolled check in front of it (5.2).
+    ⚠ The decorator is what enforces authentication, and it is not optional.
+    Without it this endpoint accepts any well-formed Activity from anyone on
+    the internet - the adapter itself does not authenticate. It validates the
+    bearer token against issuers built from TENANT_ID, which is what makes
+    validation single-tenant (5.2). Anonymous access is off by default; do not
+    turn it on.
+
+    Never hand-roll this. Hand-written validators routinely skip iss and aud,
+    which is the difference between validating a token and validating the
+    right token.
     """
     if app.state.agent_app is None:
         raise HTTPException(status_code=503, detail="Teams surface is not configured")
-
-    from microsoft_agents.hosting.fastapi import start_agent_process
 
     return await start_agent_process(request, app.state.agent_app, app.state.adapter)
 
