@@ -325,8 +325,8 @@ The other nine are a **backlog**, added when a workflow you actually run needs o
 
 | Build step | Scopes |
 |---|---|
-| Step 3 | `Mail.Read` only |
-| Step 5 | `Mail.Send`, `Mail.ReadWrite` — once `interrupt()` and idempotency keys exist |
+| Step 4 | `Application Mail.Read`, resource-scoped to the owner's mailbox via App RBAC (§8.4) |
+| Step 5 | `Application Mail.Send` / `Mail.ReadWrite`, same scoping — once `interrupt()` and idempotency keys exist |
 
 Granting send capability two steps before the approval gate exists, during the phase with the most crashes and restarts, is how you accidentally email a client at 2am.
 
@@ -336,10 +336,24 @@ Granting send capability two steps before the approval gate exists, during the p
 
 You're a Global Admin, so you *can* consent to this. That's exactly why it's dangerous. A leaked client secret otherwise reads your entire employer's correspondence.
 
-**Both of these are mandatory and simultaneous with the grant, not follow-up tasks:**
+**⚠ Corrected 4 August 2026 — the mitigation below has changed.** Application Access Policies are legacy and replaced by **RBAC for Applications**. Microsoft: *"New access configuration should not use Application Access Policies since this feature will have deprecation announced in the future."*
 
-1. **`New-ApplicationAccessPolicy`** (Exchange Online PowerShell) scoping the app registration to your mailbox only.
-2. **`Sites.Selected`** instead of `Sites.ReadWrite.All` when you reach SharePoint.
+**Do not grant `Mail.Read` in Entra at all.** RBAC grants and Entra grants are a **union**, so an unscoped Entra grant alongside a scoped RBAC grant gives *no effective scoping* — Microsoft states this explicitly. Instead:
+
+1. `New-ServicePrincipal` — a pointer in Exchange to the Entra service principal. **IDs come from Enterprise applications, not App registrations**, which shows different values.
+2. `New-ManagementScope` with a `PrimarySmtpAddress` filter — the resource scope.
+3. `New-ManagementRoleAssignment -Role "Application Mail.Read" -CustomResourceScope ...` — the only place the permission is ever granted.
+4. `Test-ServicePrincipalAuthorization` against your mailbox (**expect True**) *and* a colleague's (**expect False**). The negative test is the one that proves scoping; the positive test passes under tenant-wide access too.
+
+Runbook with real values: `infra/graph-mail-rbac.ps1`.
+
+**This is safer than what this document originally specified.** The old sequence granted tenant-wide access and then restricted it, leaving a window in which the app could read every mailbox in the tenant. RBAC never opens that window.
+
+Permission changes cache for 30 minutes to 2 hours; the Test cmdlet bypasses the cache.
+
+**Still mandatory:**
+
+- **`Sites.Selected`** instead of `Sites.ReadWrite.All` when you reach SharePoint.
 
 **Known gap:** `New-ApplicationAccessPolicy` is **Exchange-only**. It does nothing for OneDrive or SharePoint. There is no equivalent one-line mitigation for `Files.Read.All` — so **do not grant `Files.Read.All` in v1 at all.** Investigate Graph's newer granular file-level permissions before you need OneDrive access. Treat that as an open lead, not a solved problem.
 
