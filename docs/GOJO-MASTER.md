@@ -200,7 +200,7 @@ cloud creds → ANTHROPIC_AUTH_TOKEN → ANTHROPIC_API_KEY
 - Never add a config field for it — a field that doesn't exist can't be populated by accident
 - Assert it is unset at startup and fail loudly if present
 
-**Interactive vs service auth.** Under an interactive shell the SDK uses Claude Code's stored login. Under systemd (build step 4), generate a one-year token with `claude setup-token` and set it as `CLAUDE_CODE_OAUTH_TOKEN`.
+**Interactive vs service auth.** Under an interactive shell the SDK uses Claude Code's stored login. **Measured 4 Aug 2026: it also works under systemd with no token**, because the unit runs as `User=ccuser` and the SDK reads the stored credentials from that home directory — which is also why the unit must not set `ProtectHome`. A one-year `claude setup-token` / `CLAUDE_CODE_OAUTH_TOKEN` remains the durable path if the stored login ever expires, but it is not required to start.
 
 **Two APIs:** `query()` for single-shot generation without tools; `ClaudeSDKClient` for the full agentic loop with tools, sessions and manual control. Megumi and Sukuna use the latter.
 
@@ -464,7 +464,8 @@ Six properties, deliberately no more. This exists to stop scope creep dressed as
 | CI | ✅ ruff + pytest on push and PR; pip-audit advisory |
 | **Teams surface** | ✅ App package installed, JWT enforced, allow-list of one user, two-part reply proven on a real channel |
 | Conversation continuity | ✅ `AsyncSqliteSaver` keyed by Teams conversation + `ClaudeSDKClient` sessions. Verified across turns and a simulated restart |
-| **systemd, `/new`, `/compact`** | ❌ Remaining in step 3 |
+| systemd service | ✅ `gojo.service`, enabled at boot, restart-survival verified (properties 1 and 2 true) |
+| **`/new`, `/compact`** | ❌ Remaining in step 3, with the timeout, loop guard and structured logging |
 
 **Outstanding debt from v3.1: cleared.** ADR 0004 written, this document moved to `docs/`, `build-log.md` current to 4 August, `setting_sources=[]` applied.
 

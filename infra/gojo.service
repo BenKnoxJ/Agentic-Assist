@@ -1,0 +1,63 @@
+[Unit]
+# Gojo — the orchestrator service.
+#
+# Install:
+#   sudo cp infra/gojo.service /etc/systemd/system/gojo.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now gojo
+#
+# Logs:  journalctl -u gojo -f
+Description=Gojo agentic work assistant
+Documentation=https://github.com/BenKnoxJ/Agentic-Assist
+After=network-online.target
+Wants=network-online.target
+
+# Crash-loop guard. These belong in [Unit], not [Service] - systemd ignores
+# them with a warning if misplaced, so the guard silently does nothing.
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+[Service]
+Type=simple
+User=ccuser
+Group=ccuser
+WorkingDirectory=/home/ccuser/Agentic-Assist
+
+# ⚠ The module entrypoint, never `uvicorn` directly. `python -m gojo` pins
+# loop="asyncio"; invoking uvicorn selects uvloop, under which every Claude
+# Agent SDK call fails with "Reached maximum number of turns". ADR 0005.
+#
+# The venv interpreter rather than `uv run`: 4.2 chose uv partly because it
+# gives systemd a stable interpreter path that survives OS updates, and
+# `uv run` would resolve dependencies on every start.
+ExecStart=/home/ccuser/Agentic-Assist/.venv/bin/python -m gojo
+
+# Secrets stay on the host at 0600 and are never in the repo (ADR 0003).
+EnvironmentFile=/home/ccuser/Agentic-Assist/.env
+
+# Overrides the .env value on purpose. 9.2 makes LANGSMITH_TRACING=false
+# mandatory for local iteration, which would otherwise leave the service -
+# the only traffic actually worth tracing - untraced.
+Environment=LANGSMITH_TRACING=true
+
+# 10.4: a crash must not take the assistant off the air. StartLimit stops a
+# genuinely broken build from hammering the box in a restart loop.
+Restart=always
+RestartSec=5
+
+# 3.1: 7.7 GiB total on one physical core. Verify empirically before trusting
+# this number - 13 item 3 is still open.
+MemoryMax=5G
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gojo
+
+# Modest hardening. ProtectHome is deliberately NOT set: the Agent SDK reads
+# Claude Code's stored subscription credentials from the home directory, and
+# hiding it would break auth (6.2).
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
