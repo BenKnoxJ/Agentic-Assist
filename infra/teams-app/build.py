@@ -71,9 +71,31 @@ def outline_icon(size: int = 32) -> bytes:
     return _png(size, size, rows)
 
 
+def validate(doc: dict) -> None:
+    """Check the manifest against the vendored schema before packaging.
+
+    Teams rejects an invalid manifest at upload with a single terse message,
+    after you have already moved the zip to another machine. The schema is
+    vendored rather than fetched so the build works offline and does not
+    change underneath you.
+
+    Learned the hard way: `packageName` was valid in older manifests, is
+    absent from 1.17, and the schema sets additionalProperties=false.
+    """
+    from jsonschema import Draft7Validator
+
+    schema = json.loads((HERE / "MicrosoftTeams.schema.1.17.json").read_text())
+    errors = sorted(Draft7Validator(schema).iter_errors(doc), key=lambda e: list(e.path))
+    if errors:
+        for e in errors:
+            where = "/".join(str(p) for p in e.path) or "(root)"
+            print(f"  invalid at {where}: {e.message}")
+        raise SystemExit("manifest failed schema validation")
+
+
 def main() -> None:
     manifest = (HERE / "manifest.json").read_text()
-    json.loads(manifest)  # fail here rather than at upload
+    validate(json.loads(manifest))
 
     out = HERE / "gojo-teams-app.zip"
     with ZipFile(out, "w", ZIP_DEFLATED) as z:
