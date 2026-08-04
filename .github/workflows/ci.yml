@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      # 9.2: never trace from CI. Build noise would eat the 5k/month tier.
+      LANGSMITH_TRACING: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --locked --all-extras --dev
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Test
+        # No Anthropic credentials here, and none are needed: every test swaps
+        # the runner at the single injectable seam (6.3 rule 2), so the suite
+        # runs with no subprocess and no inference spend.
+        run: uv run pytest -q
+
+  audit:
+    runs-on: ubuntu-latest
+    # Advisory until confirmed green. 6.1 pins CVE floors in the lockfile;
+    # this is what catches drift away from them. Flip to blocking once it has
+    # passed once - it has never been run to completion (the VPS lacks
+    # ensurepip, so it could not be verified locally).
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Export locked dependencies
+        run: uv export --no-hashes --no-dev --format requirements-txt > requirements.txt
+
+      - name: Audit
+        run: uvx pip-audit --no-deps -r requirements.txt
