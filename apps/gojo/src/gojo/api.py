@@ -11,9 +11,11 @@ with the Teams surface; the graph underneath does not change.
 
 import logging
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from microsoft_agents.hosting.fastapi import (
     jwt_authorization_decorator,
     start_agent_process,
@@ -32,6 +34,9 @@ class ChatRequest(BaseModel):
     """One inbound message."""
 
     message: str = Field(min_length=1, max_length=4000)
+    # Same thread id means the same conversation. Handy for exercising
+    # continuity from curl without going through Teams.
+    thread_id: str = "chat"
 
 
 class ChatResponse(BaseModel):
@@ -52,59 +57,71 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     reason a worker is - there is one core to spend.
     """
     assert_subscription_auth()
-    app.state.graph = build_graph()
-
     settings = get_settings()
-    app.state.adapter = None
-    app.state.agent_app = None
 
-    if settings.teams_configured:
-        # Imported here, not at module scope: the Teams stack pulls in aiohttp
-        # and MSAL, and an unconfigured deployment should not pay for them.
-        from microsoft_agents.authentication.msal import MsalConnectionManager
-        from microsoft_agents.hosting.core import AgentAuthConfiguration
-        from microsoft_agents.hosting.fastapi import CloudAdapter
+    # from_conn_string is an async context manager and the connection must stay
+    # open for the life of the process. Entering it on the exit stack keeps it
+    # open until shutdown - closing it here would leave the graph holding a
+    # dead connection, which fails on the first message rather than at boot.
+    async with AsyncExitStack() as stack:
+        checkpoint_file = Path(settings.checkpoint_path)
+        checkpoint_file.parent.mkdir(parents=True, exist_ok=True)
+        checkpointer = await stack.enter_async_context(
+            AsyncSqliteSaver.from_conn_string(str(checkpoint_file))
+        )
+        app.state.graph = build_graph(checkpointer=checkpointer)
+        logger.info("checkpointer at %s", checkpoint_file)
 
-        auth = AgentAuthConfiguration(
-            client_id=settings.teams_client_id,
-            tenant_id=settings.teams_tenant_id,
-            client_secret=settings.teams_client_secret.get_secret_value(),
-        )
-        # The key must be exactly "SERVICE_CONNECTION" - the manager looks it up
-        # by that literal name and raises if it is absent (connection_manager.py:98).
-        connections = MsalConnectionManager(
-            connections_configurations={"SERVICE_CONNECTION": auth}
-        )
-        adapter = CloudAdapter(connection_manager=connections)
+        app.state.adapter = None
+        app.state.agent_app = None
 
-        app.state.adapter = adapter
-        # The JWT decorator reads the config from this exact attribute name.
-        # Without it every request is rejected 500 rather than validated -
-        # it fails closed, but it fails.
-        app.state.agent_configuration = auth
-        app.state.agent_app = build_agent_app(
-            adapter,
-            app.state.graph,
-            settings.teams_client_id,
-            connections,
-            settings.allowed_users,
-            settings.teams_tenant_id,
-            settings.fast_reply_seconds,
-        )
-        logger.info(
-            "Teams surface enabled for tenant %s, %d authorised user(s)",
-            settings.teams_tenant_id,
-            len(settings.allowed_users),
-        )
-        if not settings.allowed_users:
-            logger.warning(
-                "ALLOWED_USER_IDS is unset - every message will be refused. "
-                "Send one message and read the refusal log line for your object ID."
+        if settings.teams_configured:
+            # Imported here, not at module scope: the Teams stack pulls in aiohttp
+            # and MSAL, and an unconfigured deployment should not pay for them.
+            from microsoft_agents.authentication.msal import MsalConnectionManager
+            from microsoft_agents.hosting.core import AgentAuthConfiguration
+            from microsoft_agents.hosting.fastapi import CloudAdapter
+
+            auth = AgentAuthConfiguration(
+                client_id=settings.teams_client_id,
+                tenant_id=settings.teams_tenant_id,
+                client_secret=settings.teams_client_secret.get_secret_value(),
             )
-    else:
-        logger.warning("Teams surface disabled - client id, tenant id or secret unset")
+            # The key must be exactly "SERVICE_CONNECTION" - the manager looks it up
+            # by that literal name and raises if it is absent (connection_manager.py:98).
+            connections = MsalConnectionManager(
+                connections_configurations={"SERVICE_CONNECTION": auth}
+            )
+            adapter = CloudAdapter(connection_manager=connections)
 
-    yield
+            app.state.adapter = adapter
+            # The JWT decorator reads the config from this exact attribute name.
+            # Without it every request is rejected 500 rather than validated -
+            # it fails closed, but it fails.
+            app.state.agent_configuration = auth
+            app.state.agent_app = build_agent_app(
+                adapter,
+                app.state.graph,
+                settings.teams_client_id,
+                connections,
+                settings.allowed_users,
+                settings.teams_tenant_id,
+                settings.fast_reply_seconds,
+            )
+            logger.info(
+                "Teams surface enabled for tenant %s, %d authorised user(s)",
+                settings.teams_tenant_id,
+                len(settings.allowed_users),
+            )
+            if not settings.allowed_users:
+                logger.warning(
+                    "ALLOWED_USER_IDS is unset - every message will be refused. "
+                    "Send one message and read the refusal log line for your object ID."
+                )
+        else:
+            logger.warning("Teams surface disabled - client id, tenant id or secret unset")
+
+        yield
 
 
 app = FastAPI(title="Gojo", version="0.1.0", lifespan=lifespan)
@@ -150,9 +167,12 @@ async def messages(request: Request) -> Response:
 async def chat(request: ChatRequest) -> ChatResponse:
     """Run one message through the orchestrator and return the reply."""
     initial = {"message": request.message, "steps": [], "findings": []}
+    # With a checkpointer compiled in, LangGraph requires a thread id: it is
+    # the key the conversation is stored under.
+    config = {"configurable": {"thread_id": request.thread_id}}
 
     try:
-        result = await app.state.graph.ainvoke(initial)
+        result = await app.state.graph.ainvoke(initial, config)
     except Exception as exc:  # noqa: BLE001 - contained, see 10.4
         # A dead upstream degrades the answer; it does not kill the process.
         raise HTTPException(status_code=502, detail=f"orchestrator failed: {exc}") from exc

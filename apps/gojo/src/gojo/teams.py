@@ -138,10 +138,17 @@ def build_agent_app(
         connection_manager=connections,
     )
 
-    async def _run_graph(message: str) -> str:
-        """Run one turn. Never raises - a failure becomes a reply."""
+    async def _run_graph(message: str, thread_id: str) -> str:
+        """Run one turn. Never raises - a failure becomes a reply.
+
+        thread_id is the Teams conversation id, so state and the agent's
+        session follow the chat rather than the process.
+        """
         try:
-            result = await graph.ainvoke({"message": message, "steps": [], "findings": []})
+            result = await graph.ainvoke(
+                {"message": message, "steps": [], "findings": []},
+                {"configurable": {"thread_id": thread_id}},
+            )
             return result["reply"]
         except Exception:
             # 10.4: a dead upstream degrades the answer, it does not kill the
@@ -183,7 +190,8 @@ def build_agent_app(
         # arrive three seconds later is worse than no acknowledgement at all.
         await context.send_activity(Activity(type=ActivityTypes.typing))
 
-        task = asyncio.create_task(_run_graph(message))
+        thread_id = context.activity.conversation.id
+        task = asyncio.create_task(_run_graph(message, thread_id))
         _track(task)
 
         # Spend part of Azure Bot Service's response window waiting. If the

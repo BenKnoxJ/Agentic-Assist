@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     # (ADR 0006) - this budget is spent inside that window.
     fast_reply_seconds: float = 5.0
 
+    # Where conversation state lives. SQLite, not Postgres: at one user's
+    # write volume it is lower overhead, needs no extra process, and is a
+    # single file to back up (6.1). Gitignored via checkpoints/.
+    checkpoint_path: str = "checkpoints/gojo.sqlite"
+
     @property
     def allowed_users(self) -> frozenset[str]:
         """Entra object IDs permitted to use the assistant."""

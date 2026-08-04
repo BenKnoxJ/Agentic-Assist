@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from gojo import api, orchestrator
+from gojo.agents.runner import AgentResult
 from gojo.config import Settings
 
 
@@ -21,8 +22,12 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     happened to be configured on the machine running them.
     """
 
-    async def fake_gather(message: str) -> str:
-        return f"stub findings for: {message}"
+    async def fake_gather(message: str, resume: str | None = None) -> AgentResult:
+        # Mirrors the real signature: the node passes resume= and reads
+        # .session_id back, so a str stub would hide a wiring break.
+        return AgentResult(
+            text=f"stub findings for: {message}", session_id="stub-session"
+        )
 
     monkeypatch.setattr(orchestrator, "gather", fake_gather)
     monkeypatch.setattr(api, "get_settings", lambda: Settings(_env_file=None))

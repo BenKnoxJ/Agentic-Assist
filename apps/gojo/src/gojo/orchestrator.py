@@ -14,6 +14,15 @@ from gojo.state import GojoState
 ACTION_WORDS = ("send", "reply", "create", "update", "close", "delete", "assign")
 
 
+def new_turn(state: GojoState) -> dict:
+    """Clear per-turn state before anything runs.
+
+    With a checkpointer the previous turn's state is still here. Steps and
+    findings describe one turn and must not carry over; session_id must.
+    """
+    return {"steps": None, "findings": None, "reply": ""}
+
+
 def classify(state: GojoState) -> dict:
     """Deterministic intent classification. Kept deterministic on purpose."""
     text = state["message"].lower()
@@ -28,10 +37,18 @@ def route_by_intent(state: GojoState) -> str:
 
 
 async def megumi(state: GojoState) -> dict:
-    """Gather agent - read-only. Delegates to the Agent SDK."""
+    """Gather agent - read-only. Delegates to the Agent SDK.
+
+    Carries session_id in and back out, which is what makes a conversation
+    continue rather than restart on every message.
+    """
     print("[megumi] gathering")
-    findings = await gather(state["message"])
-    return {"findings": [findings], "steps": ["megumi"]}
+    result = await gather(state["message"], resume=state.get("session_id"))
+    return {
+        "findings": [result.text],
+        "steps": ["megumi"],
+        "session_id": result.session_id,
+    }
 
 
 def sukuna(state: GojoState) -> dict:
@@ -48,16 +65,24 @@ def respond(state: GojoState) -> dict:
     return {"reply": body, "steps": ["respond"]}
 
 
-def build_graph():
-    """Assemble and compile the orchestrator graph."""
+def build_graph(checkpointer=None):
+    """Assemble and compile the orchestrator graph.
+
+    Args:
+        checkpointer: a LangGraph checkpointer. Without one the graph is
+            stateless and every invocation starts fresh - fine for tests and
+            for /chat, not for a conversation.
+    """
     builder = StateGraph(GojoState)
 
+    builder.add_node("new_turn", new_turn)
     builder.add_node("classify", classify)
     builder.add_node("megumi", megumi)
     builder.add_node("sukuna", sukuna)
     builder.add_node("respond", respond)
 
-    builder.add_edge(START, "classify")
+    builder.add_edge(START, "new_turn")
+    builder.add_edge("new_turn", "classify")
     builder.add_conditional_edges(
         "classify",
         route_by_intent,
@@ -67,7 +92,7 @@ def build_graph():
     builder.add_edge("sukuna", "respond")
     builder.add_edge("respond", END)
 
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer)
 
 
 async def main() -> None:
