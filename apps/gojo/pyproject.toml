@@ -11,6 +11,12 @@ dependencies = [
     "langgraph-checkpoint-sqlite>=3.0.1",
     "langchain-core>=1.2.22",
     "claude-agent-sdk>=0.2.128",
+    # Teams surface. Verified against PyPI 4 Aug 2026: 1.3.0 current.
+    # The doc's 1.1.0 was stale; botbuilder-python is archived (5.1).
+    "microsoft-agents-hosting-core>=1.3.0",
+    "microsoft-agents-hosting-fastapi>=1.3.0",
+    "microsoft-agents-hosting-teams>=1.3.0",
+    "microsoft-agents-authentication-msal>=1.3.0",
 ]
 
 [build-system]

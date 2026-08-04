@@ -9,6 +9,7 @@ silently move billing to pay-as-you-go API rates. See GOJO-MASTER.md 6.2.
 import os
 from functools import lru_cache
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,6 +27,26 @@ class Settings(BaseSettings):
 
     max_turns_per_agent: int = 8
     max_tokens_per_turn: int = 4096
+
+    # Teams surface. Single-tenant: TENANT_ID is what restricts the accepted
+    # token issuers to your tenant (the SDK builds them from it), so leaving it
+    # unset silently widens who can call you. GOJO-MASTER.md 5.2.
+    #
+    # Note these are NOT the Bot Framework v4 names. That SDK used
+    # MicrosoftAppType/MicrosoftAppId/MicrosoftAppTenantId; the Agents SDK reads
+    # CLIENTID/TENANTID/CLIENTSECRET. Same concept, different keys.
+    teams_client_id: str = ""
+    teams_tenant_id: str = ""
+    teams_client_secret: SecretStr = SecretStr("")
+
+    @property
+    def teams_configured(self) -> bool:
+        """True when the Teams surface has everything it needs to authenticate."""
+        return bool(
+            self.teams_client_id
+            and self.teams_tenant_id
+            and self.teams_client_secret.get_secret_value()
+        )
 
 
 def assert_subscription_auth() -> None:

@@ -26,7 +26,20 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
 
 def test_health(client: TestClient) -> None:
-    assert client.get("/health").json() == {"status": "ok"}
+    body = client.get("/health").json()
+    assert body["status"] == "ok"
+    assert body["turns_in_flight"] == 0
+
+
+def test_health_reports_teams_disabled_without_credentials(client: TestClient) -> None:
+    """No client id, tenant id or secret means no Teams surface, and it says so."""
+    assert client.get("/health").json()["teams"] == "disabled"
+
+
+def test_messages_endpoint_refuses_when_unconfigured(client: TestClient) -> None:
+    """503, not a crash and not a silent 200 that swallows the activity."""
+    r = client.post("/api/messages", json={"type": "message", "text": "hi"})
+    assert r.status_code == 503
 
 
 def test_read_path_routes_to_megumi(client: TestClient) -> None:
