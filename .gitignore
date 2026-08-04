@@ -23,3 +23,6 @@ checkpoints/
 
 # OS
 .DS_Store
+
+# Build artifacts
+gojo-teams-app.zip

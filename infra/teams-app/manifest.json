@@ -1,0 +1,36 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.17",
+  "version": "1.0.0",
+  "id": "2b6bad70-f62b-4148-9138-20c1d71319ca",
+  "packageName": "technology.conversant.gojo",
+  "developer": {
+    "name": "Ben Knox",
+    "websiteUrl": "https://cc-sfq4tema454pu.uksouth.cloudapp.azure.com",
+    "privacyUrl": "https://cc-sfq4tema454pu.uksouth.cloudapp.azure.com",
+    "termsOfUseUrl": "https://cc-sfq4tema454pu.uksouth.cloudapp.azure.com"
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "name": {
+    "short": "Gojo",
+    "full": "Gojo — agentic work assistant"
+  },
+  "description": {
+    "short": "Reads across your work systems and tells you what needs attention.",
+    "full": "Gojo is a private, single-user work assistant. Ask it what needs your attention and it works out what to fetch, reads across your connected systems, and answers. Anything that would change something is held behind an approval gate and only runs after you say yes.\n\nOrchestration is a LangGraph state machine; execution is the Claude Agent SDK. Long turns are acknowledged immediately and answered when the work completes."
+  },
+  "accentColor": "#1B3A6B",
+  "bots": [
+    {
+      "botId": "2b6bad70-f62b-4148-9138-20c1d71319ca",
+      "scopes": ["personal"],
+      "supportsFiles": false,
+      "isNotificationOnly": false
+    }
+  ],
+  "permissions": ["identity", "messageTeamMembers"],
+  "validDomains": ["cc-sfq4tema454pu.uksouth.cloudapp.azure.com"]
+}
