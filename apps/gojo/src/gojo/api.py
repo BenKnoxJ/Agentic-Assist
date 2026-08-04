@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 from gojo.commands import handle as handle_command
 from gojo.commands import is_command
 from gojo.config import assert_subscription_auth, get_settings
+from gojo.logs import new_turn_id
 from gojo.orchestrator import GraphTimeout, build_graph, run_turn
 from gojo.state import Intent
 from gojo.teams import build_agent_app, in_flight_count
@@ -168,6 +169,7 @@ async def messages(request: Request) -> Response:
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
     """Run one message through the orchestrator and return the reply."""
+    new_turn_id()
     # Same command handling as Teams, so behaviour can be exercised from curl
     # rather than only from a phone.
     if is_command(request.message):

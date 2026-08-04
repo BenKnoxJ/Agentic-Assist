@@ -36,6 +36,7 @@ from microsoft_agents.hosting.core import (
 
 from gojo.commands import handle as handle_command
 from gojo.commands import is_command
+from gojo.logs import new_turn_id
 from gojo.orchestrator import GraphTimeout, run_turn
 
 logger = logging.getLogger(__name__)
@@ -170,6 +171,8 @@ def build_agent_app(
     @app.activity(ActivityTypes.message)
     async def on_message(context: TurnContext, state: TurnState) -> bool:
         """Authorise, acknowledge inside the timeout, then hand off."""
+        # Stamped before anything else so even a refusal is traceable.
+        new_turn_id()
         sender = context.activity.from_property
         aad_id = sender.aad_object_id if sender else None
         tenant = context.activity.conversation.tenant_id if context.activity.conversation else None
@@ -205,6 +208,7 @@ def build_agent_app(
         # arrive three seconds later is worse than no acknowledgement at all.
         await context.send_activity(Activity(type=ActivityTypes.typing))
 
+        started = asyncio.get_running_loop().time()
         task = asyncio.create_task(_run_graph(message, thread_id))
         _track(task)
 
@@ -212,12 +216,19 @@ def build_agent_app(
         # answer lands in time it goes back as a single message on this turn -
         # no acknowledgement, no proactive call.
         done, _ = await asyncio.wait({task}, timeout=fast_reply_seconds)
+        elapsed = asyncio.get_running_loop().time() - started
         if task in done:
+            logger.info("turn fast path: %.1fs (budget %.1fs)", elapsed, fast_reply_seconds)
             await context.send_activity(task.result())
             return True
 
         # Slow turn: say so, return before the channel times out, and deliver
         # the answer proactively when it arrives (ADR 0006).
+        logger.info(
+            "turn slow path: still running at %.1fs (budget %.1fs) - sending ack",
+            elapsed,
+            fast_reply_seconds,
+        )
         await context.send_activity(ACK)
         _track(asyncio.create_task(_deliver_when_done(task, reference)))
         return True

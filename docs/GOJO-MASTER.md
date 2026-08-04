@@ -467,7 +467,8 @@ Six properties, deliberately no more. This exists to stop scope creep dressed as
 | systemd service | ✅ `gojo.service`, enabled at boot, restart-survival verified (properties 1 and 2 true) |
 | Runaway guards | ✅ 180s wall clock, explicit `recursion_limit`, 5 agent calls/turn with a graceful exit (9.3's "use both") |
 | `/new`, `/compact`, `/help` | ✅ Verified live: compacted a conversation, carried the summary into a fresh session, answered from it |
-| **Structured logging** | ◐ Levels reach the journal; JSON and correlation IDs still outstanding |
+| Structured logging | ✅ One turn id per turn, propagated through the graph and into the SDK's own logger. `grep turn=<id>` isolates a turn |
+| **README** | ❌ Still one line — the last outstanding debt (§16) |
 
 **Outstanding debt from v3.1: cleared.** ADR 0004 written, this document moved to `docs/`, `build-log.md` current to 4 August, `setting_sources=[]` applied.
 
@@ -475,7 +476,7 @@ Six properties, deliberately no more. This exists to stop scope creep dressed as
 
 1. **No runaway-loop guard.** §9.3 mandates *both* an explicit `recursion_limit` and a state budget field. Neither exists; LangGraph's default 25 applies implicitly. §9.3 ranks runaway loops the best-evidenced failure mode, and connectors at step 4 are what make loops expensive
 2. **No timeout on graph invocation.** A hung Agent SDK subprocess hangs the request indefinitely
-3. **`print()` not structured logging** — the systemd journal wants levels and correlation IDs
+3. ~~`print()` not structured logging~~ — **done 4 Aug 2026.** Turn ids via contextvars, key=value format
 4. **README is one line.** §16 names it the first thing a portfolio reader sees
 5. ~~`runner.py` uses `query()`, not `ClaudeSDKClient`~~ — **done 4 Aug 2026.** Sessions depend on it (ADR 0007)
 

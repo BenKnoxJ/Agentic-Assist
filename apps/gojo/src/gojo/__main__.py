@@ -13,23 +13,14 @@ I/O-bound on one core (GOJO-MASTER.md 3.1, 4.3), so uvloop's throughput
 advantage is not something this system was ever going to spend.
 """
 
-import logging
-
 import uvicorn
+
+from gojo.logs import configure
 
 
 def main() -> None:
     """Run the HTTP surface. Single worker - see GOJO-MASTER.md 4.3."""
-    # Uvicorn configures its own loggers, not ours. Without this the root
-    # level stays WARNING and every logger.info in the application is
-    # silently dropped - including the per-turn cost figures, which are the
-    # only spend signal that crosses the Agent SDK subprocess boundary (9.2).
-    # A full structured-logging pass is still outstanding; this is the
-    # minimum that makes application logs reach the journal at all.
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(levelname)s %(name)s %(message)s",
-    )
+    configure()
 
     uvicorn.run(
         "gojo.api:app",

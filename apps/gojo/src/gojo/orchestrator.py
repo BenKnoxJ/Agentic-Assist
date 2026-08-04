@@ -36,7 +36,7 @@ def classify(state: GojoState) -> dict:
     """Deterministic intent classification. Kept deterministic on purpose."""
     text = state["message"].lower()
     intent = "act" if any(w in text for w in ACTION_WORDS) else "gather"
-    print(f"[classify] intent={intent}")
+    logger.info("classify intent=%s", intent)
     return {"intent": intent, "steps": ["classify"]}
 
 
@@ -59,7 +59,7 @@ async def megumi(state: GojoState) -> dict:
         logger.warning("agent budget exhausted: %d calls used this turn", used)
         return {"findings": [BUDGET_EXHAUSTED], "steps": ["megumi:over-budget"]}
 
-    print("[megumi] gathering")
+    logger.info("megumi gathering")
     result = await gather(
         state["message"],
         resume=state.get("session_id"),
@@ -82,13 +82,13 @@ async def megumi(state: GojoState) -> dict:
 
 def sukuna(state: GojoState) -> dict:
     """Act agent - writes. Stub. Only ever runs behind interrupt()."""
-    print("[sukuna] acting (stub)")
+    logger.info("sukuna acting (stub)")
     return {"steps": ["sukuna"]}
 
 
 def respond(state: GojoState) -> dict:
     """Format the reply. A node, not an agent - one call, no tools."""
-    print("[respond] composing")
+    logger.info("respond composing")
     findings = state["findings"]
     body = findings[0] if findings else "(no findings)"
     return {"reply": body, "steps": ["respond"]}
