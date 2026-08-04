@@ -1,14 +1,16 @@
 # Gojo — Master Document
 
-**Version:** 3.1 — build in progress
+**Version:** 3.2 — build in progress
 **Date:** 4 August 2026
 **Owner:** Ben Knox (GitHub: `BenKnoxJ`)
 **Repo:** `BenKnoxJ/Agentic-Assist` (private monorepo)
 **Package:** `gojo` (repo carries the portfolio-facing name; the Python package stays `gojo`)
 
-> **This document supersedes v1 and v2.** It is the single source of truth. Where it conflicts with an ADR, a code comment, or an earlier document, **this wins** — see §9.2 for known supersessions.
+> **This document supersedes v1 and v2.** It is the single source of truth. Where it conflicts with an ADR, a code comment, or an earlier document, **this wins** — see §15 for known supersessions, and §18 for which document owns which fact.
 >
-> **What changed in v3:** scope cut to a shippable v1. The retrieval layer (Postgres, pgvector, embeddings, reranking, evals) is researched and documented but **deliberately not built yet** — see §8. Agent topology settled. Four corrections applied from external review.
+> **What changed in v3:** scope cut to a shippable v1. The retrieval layer (Postgres, pgvector, embeddings, reranking, evals) researched and documented but not built — *this deferral is superseded by v3.2 below; retrieval is now committed as step 6, see §12.* Agent topology settled. Four corrections applied from external review.
+>
+> **What changed in v3.2:** memory promoted from a folder of markdown to a **three-layer architecture** (§9.1), and retrieval moved from *deferred* to **committed and sequenced as build step 6** (§12) — Postgres 17 + pgvector + Voyage. Build step 1 is complete. §13 item 1 answered by measurement. §18 added to stop document drift.
 
 ---
 
@@ -87,6 +89,8 @@ Already running. Specs measured 27 July 2026:
 **Why:** two of your six production-grade properties — "survives restart" and "runs as a service" — are literally this. There's no alternative worth considering on a single VPS.
 
 **Configuration:** `Restart=always`, `RestartSec=5`, `StartLimitBurst` to prevent crash-loop hammering, `MemoryMax` at 5–6 GiB initially (verify empirically), `StandardOutput=journal`.
+
+**⚠ `ExecStart` must invoke `python -m gojo`, never `uvicorn` directly.** The module entrypoint pins `loop="asyncio"`; calling `uvicorn` selects uvloop, under which every Agent SDK call fails deterministically. **ADR 0005.** The symptom is "Reached maximum number of turns", which reads as an agent fault and not an event-loop one — expect to lose time to it if the unit is written from memory.
 
 ## 4. Application
 
@@ -341,17 +345,37 @@ You're a Global Admin, so you *can* consent to this. That's exactly why it's dan
 
 **Auth boundary:** the MCP-client→server hop and the server→upstream-API hop are different trust boundaries. Never collapse them into one token. Never return raw upstream tokens through a tool-call response.
 
-## 9. Knowledge, observability and data
+## 9. Memory, observability and data
 
-### 9.1 Knowledge — markdown files on disk
+### 9.1 Memory — three layers
 
-**What it is:** a folder of markdown files. Accumulated context about projects, people, decisions, how you work.
+Memory is not one thing. Three questions need answering and they have different shapes, different lifetimes and different storage:
 
-**Why this and nothing else in v1:** the Agent SDK already ships with read, grep and glob. Point it at a folder and it reads the files. That covers a surprising amount of what a full retrieval pipeline is built for.
+| Layer | Answers | v1 storage | Step 6 storage |
+|---|---|---|---|
+| **Episodic** | "what happened and why" | `knowledge/sessions/*.md` | Postgres + pgvector |
+| **Reference** | "how things work" | `knowledge/topics/*.md` | Postgres + pgvector |
+| **Operational** | "what's true right now" | `knowledge/RECENT.md` | stays a file |
 
-**The write rule:** agents write new learnings to a `pending/` folder only, never to canonical files. You promote or reject on a periodic pass. This is the human-review gate that stops agent-written memory drifting into mush — and it's the part that survives into the deferred retrieval layer unchanged.
+The operational layer never needs embedding — it is small, current, and read whole. The other two grow without bound and are what retrieval is eventually for.
 
-Git-versioned, so you get diffs and history for free.
+*Model adapted from the owner's personal agentic setup, which runs the same three-layer split in production across 17 agents. The layers transfer; none of the software does — see §12.*
+
+**Why markdown first:** the Agent SDK ships with read, grep and glob. Point it at a folder and it reads the files. At v1 corpus size that outperforms vector search, because ADRs and session notes are keyword-dense and structured — lexical matching is the right tool until the corpus outgrows it. §12 defines when it has.
+
+**The write rule:** agents write new learnings to `knowledge/pending/` only, never to canonical files. You promote or reject on a periodic pass. This is the human-review gate that stops agent-written memory drifting into mush — and it survives into the retrieval layer unchanged.
+
+**One store, shared by both agents.** Megumi and Sukuna read the same memory. Splitting it would mean the act agent cannot see what the gather agent learned, which is the failure the topology in §7 exists to avoid.
+
+**⚠ Injection is a message, never the system prompt.** Memory content varies per turn. §9.3's cache prefix order is `tools → system prompt → messages`, so varying content placed in the system prompt invalidates the entire cache on every call — the §6.3 rule 1 failure arriving through a different door. Inject after the stable prefix, as a message.
+
+**Injection budget:** cap it. Roughly 1.5k tokens of recency plus 1.5k of relevance, tuned once real traces exist. Unbounded injection is §6.3 rule 3 with extra steps.
+
+**Retention is built with the store, not after it.** Every layer gets a size ceiling and a rotation rule at the moment it is created. *Evidence: the owner's personal setup tripped a 400MB vector-store ceiling on 2026-06-28 with no retention routine written; it remains unbuilt.* Retrofitting retention onto a corpus you already depend on is materially harder than writing it up front.
+
+**Capture needs a health signal.** "Is memory actually recording?" must be answerable without inspecting files. *Evidence: the same personal setup has carried a broken-capture marker since 2026-06-07, unresolved, with capture believed-but-not-known to be working.* Silent degradation is the characteristic failure of memory systems. Treat this as §10 property 3 applied to memory: a degraded memory layer must be visible, not inferred.
+
+Git-versioned while it is markdown, so you get diffs and history for free.
 
 ### 9.2 Observability — LangSmith (EU region)
 
@@ -368,7 +392,9 @@ Wrong prefix gives a 403 that doesn't look like a naming problem.
 
 **Free tier:** Developer is 5,000 traces/month, 14-day retention, hard 429 at the cap (no silent billing).
 
-**⚠ Unknown:** LangChain documents a trace as "a collection of runs for a single operation" but **never defines how nested runs compose into a billable trace**. Whether one Teams turn produces one root or several — particularly across the Agent SDK subprocess boundary — is **unverified**. Break-even is roughly 11 roots/turn. See §12 item 1; this is the first experiment to run.
+**✅ Resolved 4 August 2026 — one root per turn.** LangChain never documents how nested runs compose into a billable trace, so it was measured directly against the EU API: 8 turns produced 8 root runs, each a single `LangGraph` root with `classify`, `route_by_intent`, one agent node and `respond` as children. Break-even was roughly 11 roots/turn, so the 5,000-trace tier is not a constraint at this topology.
+
+**⚠ The measurement also exposed a real gap.** All runs are `run_type: chain` — **zero LLM runs, zero token counts, and the agent nodes have no children**. The Agent SDK runs Claude in a subprocess and nothing crosses back into LangSmith. So orchestration is traced (which node ran, routing, state, latency, errors) but reasoning is not (prompts, tool calls, model, turns, tokens, cost). Against §10 property 3 that is a hole: a trace shows *that* an agent returned something wrong, never *why*. Bridging the subprocess boundary — a `@traceable` span around the runner, or feeding SDK response metadata into the run — is unresolved. See §13 item 8.
 
 **Mandatory:** gate dev tracing behind a flag (`LANGSMITH_TRACING=false` locally). Build iteration generates far more traces than actual use.
 
@@ -407,7 +433,7 @@ Six properties, deliberately no more. This exists to stop scope creep dressed as
 
 **Not in scope:** multi-user, horizontal scale, HA, public rate limiting.
 
-## 11. Build sequence — v1 is steps 1 to 5
+## 11. Build sequence — v1 is steps 1 to 5, memory is step 6
 
 | # | Step | Done when |
 |---|---|---|
@@ -416,39 +442,48 @@ Six properties, deliberately no more. This exists to stop scope creep dressed as
 | **3** | **Two read connectors** | Graph mail (`Mail.Read` only) + Jira. Gather agent returns real findings. Access policy applied |
 | **4** | **Persistence + service** | SQLite checkpointer, systemd unit. Properties 1 and 2 true |
 | **5** | **Approval gates + write scopes** | `interrupt()` before writes, idempotency keys, `Mail.Send` granted. Property 6 true |
+| **6** | **Memory + retrieval** | Postgres 17 + pgvector, Voyage embeddings, evals. §12 |
 
-**At step 5 you have a complete, production-grade system you use every day.** Then you use it for a fortnight and let real gaps drive what comes next.
+**At step 5 you have a complete, production-grade system you use every day.** Then you use it for a fortnight and let real gaps drive what comes next. **Step 6 is committed, not speculative** — but it is deliberately last, because it needs a corpus that steps 2–5 produce. See §12.
 
-### 11.0 Current position — step 1, ~80% complete
+### 11.0 Current position — step 1 complete
 
 | Piece | State |
 |---|---|
 | uv workspace, locked | ✅ langgraph 1.2.10, langchain-core 1.5.2, fastapi 0.141.1 — CVE floors cleared |
 | LangGraph graph | ✅ 4 nodes (`classify`, `megumi`, `sukuna`, `respond`), conditional routing proven on both paths |
-| LangSmith tracing | ✅ EU region, project `Gojo-Agent-OS`, traces landing |
-| Agent SDK + subscription auth | ✅ `claude-agent-sdk 0.2.128`, guard in `config.py` rejects `ANTHROPIC_API_KEY` |
+| LangSmith tracing | ✅ EU region, project `Gojo-Agent-OS`, 1 root per turn measured (§9.2) |
+| Agent SDK + subscription auth | ✅ `claude-agent-sdk 0.2.128`, guard in `config.py` rejects `ANTHROPIC_API_KEY`, covered by tests |
 | Megumi reasoning for real | ✅ Verified — coherent output, not a stub |
-| **FastAPI endpoint** | ❌ **The one remaining piece** |
+| FastAPI endpoint | ✅ `POST /chat`, `GET /health`, both paths verified by curl with real inference |
+| Agent isolation | ✅ `setting_sources=[]` — agents inherit nothing from the host Claude Code environment |
+| CI | ✅ ruff + pytest on push and PR; pip-audit advisory |
 
-**Outstanding debt — clear before step 2:**
+**Outstanding debt from v3.1: cleared.** ADR 0004 written, this document moved to `docs/`, `build-log.md` current to 4 August, `setting_sources=[]` applied.
 
-1. **ADR 0004 not written.** Repo still contains ADR 0001 ("Bun") with nothing superseding it
-2. **This document not yet on the VPS** at `docs/GOJO-MASTER.md`
-3. **`build-log.md` untouched** across the build sessions
-4. **`setting_sources=[]`** not yet applied to `runner.py` — agents currently inherit ambient Claude Code config
+**Carried debt — clear before step 3:**
+
+1. **No runaway-loop guard.** §9.3 mandates *both* an explicit `recursion_limit` and a state budget field. Neither exists; LangGraph's default 25 applies implicitly. §9.3 ranks runaway loops the best-evidenced failure mode, and connectors at step 3 are what make loops expensive
+2. **No timeout on graph invocation.** A hung Agent SDK subprocess hangs the request indefinitely
+3. **`print()` not structured logging** — step 4's systemd journal wants levels and correlation IDs
+4. **README is one line.** §16 names it the first thing a portfolio reader sees
 
 **Repo layout as built:**
 
 ```
 Agentic-Assist/
 ├── apps/gojo/src/gojo/
+│   ├── api.py             FastAPI app, graph compiled in lifespan
+│   ├── __main__.py        server entrypoint — pins loop="asyncio", ADR 0005
 │   ├── config.py          settings + assert_subscription_auth()
 │   ├── orchestrator.py    graph, 4 nodes, conditional routing
 │   ├── state.py           GojoState with reducers
 │   └── agents/
 │       ├── megumi.py      gather agent + static system prompt
 │       └── runner.py      single Agent SDK entry point (§6.3 rule 2)
-├── docs/decisions/        ADRs 0001-0003
+├── apps/gojo/tests/       test_api.py, test_config.py
+├── .github/workflows/     ci.yml
+├── docs/decisions/        ADRs 0001-0005
 └── pyproject.toml         uv workspace root
 ```
 
@@ -464,7 +499,7 @@ Agentic-Assist/
 ### 11.2 Project structure
 
 ```
-Gojo-multi-agent-os/
+Agentic-Assist/
 ├── pyproject.toml              # [tool.uv.workspace]
 ├── uv.lock
 ├── apps/
@@ -473,37 +508,72 @@ Gojo-multi-agent-os/
 │   └── connectors/
 │       ├── graph/
 │       └── jira/
+├── knowledge/                  # §9.1 memory — from step 6, earlier if useful
+│   ├── RECENT.md               #   operational
+│   ├── sessions/               #   episodic
+│   ├── topics/                 #   reference
+│   └── pending/                #   agent writes land here for promotion
 └── docs/
     ├── GOJO-MASTER.md          ← this document
     ├── build-log.md
-    └── adr/
+    └── decisions/              # ADRs
 ```
 
-## 12. Deferred — researched, not built
+## 12. Memory and retrieval — committed, sequenced as step 6
 
-**Everything below is fully specified in the research findings and deliberately not in v1.**
+**Changed in v3.2.** Retrieval was previously "deferred, maybe". It is now a **committed part of the architecture** with a defined place in the build sequence. What has not changed is the sequencing argument, which is still correct: it is built **after** v1, not instead of it.
 
-The reasoning: **"what needs my attention today" is a live API question, not a search question.** Graph knows your inbox; Jira knows your tickets. The agent calls them and reads the answer. Retrieval solves "find the needle in a large static corpus" — a real problem you'll hit, but not this one. Building it now means guessing what the corpus is before you know.
+### 12.1 Why step 6 and not step 2
+
+**"What needs my attention today" is a live API question, not a search question.** Graph knows your inbox; Jira knows your tickets. The agent calls them and reads the answer. Retrieval solves "find the needle in a large corpus" — a real problem, but not that one.
+
+The binding constraint is corpus, not capability:
+
+- **There is nothing to retrieve yet.** Five ADRs, a build log and this document is roughly 60KB — small enough to hand to a model whole. Vector search earns its place when the corpus outgrows what fits in context, and it does not yet.
+- **Chunking decisions made before the corpus exists are guesses.** You cannot know how to split what has not been written.
+- **§3.1 is the real cost.** Postgres on one physical core, alongside Uvicorn and the Agent SDK subprocess. That is the resource this document has protected throughout.
+- **Retrieval without evals is undebuggable**, and evals need a corpus and real questions to score against.
+
+Steps 2–5 produce the corpus as a side effect of use. Step 6 then builds retrieval over something real.
+
+**The markdown layer is not a placeholder — it is the prerequisite.** §9.1's three layers accumulate from now. Whatever gets embedded at step 6 is exactly what those folders contain.
+
+### 12.2 What step 6 builds
+
+| Component | Choice | Note |
+|---|---|---|
+| Database | **PostgreSQL 17 + pgvector** | `halfvec`, HNSW. One process, not a second vector store — see below |
+| Embeddings | **Voyage** | Free tier, API key already held. Hosted, not local — §3.1 |
+| Retrieval | Hybrid: lexical + vector, RRF fusion, reranking | Lexical alone carries v1; fusion is the upgrade |
+| Evals | **RAGAS / DeepEval**, golden set | Built *with* retrieval, not after. Without it you cannot prove a change helped |
+| Retention | Size ceiling + rotation per layer | Written at creation time, §9.1 |
+
+**Not Chroma, not a second datastore.** Postgres is arriving anyway; a separate vector store is another process competing for the one core, and the owner's personal setup already demonstrates the size-management burden of running one (§9.1).
+
+**Checkpointer stays SQLite.** §6.1's reasoning holds even once Postgres exists: at one user's write volume SQLite is lower overhead and is a single file to back up. Two stores, each doing what it is best at. Revisit only with measured write volume, and only via ADR.
+
+**Trigger to start step 6 early:** the first time you ask Gojo something it cannot answer from a live API call *and* the answer exists in `knowledge/`. That is the signal that lexical search has stopped being enough.
+
+### 12.3 Still deferred
 
 | Deferred | Trigger to build |
 |---|---|
-| PostgreSQL 17 + pgvector, `halfvec`, HNSW | First time you ask Gojo something it can't answer from a live API call |
-| Voyage embeddings, RRF fusion, reranking, chunking | Same |
-| RAGAS, DeepEval, golden sets | When retrieval exists and you need to prove a change improved it |
 | Nine remaining connectors | When a workflow you actually run needs one |
 | Multi-agent routing beyond gather/act | When a tool list passes ~15–20 tools |
 
-**The research isn't wasted — it's a map, not a build plan.** It caught the LangGraph CVE chain, the archived Bot Framework SDK, the delegated-auth problem, and the tenant-wide blast radius. All four are v1 concerns and all four are handled above. The retrieval half is a reference you open at the trigger.
+**The research isn't wasted — it's a map.** It caught the LangGraph CVE chain, the archived Bot Framework SDK, the delegated-auth problem, and the tenant-wide blast radius. All four are v1 concerns and all four are handled above.
 
 ## 13. Open — settle by experiment, not research
 
-1. **Roots-per-turn in LangSmith.** Ten instrumented turns with a known topology answers it. **Do this first** — it retires the biggest unverified assumption in this document.
+1. ~~**Roots-per-turn in LangSmith.**~~ **Answered 4 August 2026: one root per turn.** Measured, 8 turns / 8 roots. See §9.2.
 2. **Current Agents SDK version.** Check PyPI before pinning.
 3. **`MemoryMax` sizing.** Start 5–6 GiB, load-test.
 4. **Agent SDK cache TTL** — flagged as a documentation gap in Anthropic's own repo. Verify against response metadata.
 5. **Adaptive Cards schema version** Teams currently renders — five-minute empirical test.
 6. **Jira and Zoho API access** at Conversant's licence tier — account verification, not research.
 7. **Graph granular file permissions** — whether a `Files.Read.All` equivalent to `Sites.Selected` exists.
+8. **Bridging Agent SDK traces into LangSmith.** Agent reasoning is currently invisible (§9.2). Whether a `@traceable` span around the runner is sufficient, or SDK response metadata must be fed in explicitly, is untested. Affects §10 property 3.
+9. **uvloop vs the Agent SDK — root cause.** ADR 0005 pins `loop="asyncio"` because SDK calls fail deterministically under uvloop. The mechanism is inferred (anyio subprocess handling), not established. Revisit if the SDK changes transport.
 
 ## 14. Working principles
 
@@ -521,12 +591,12 @@ The reasoning: **"what needs my attention today" is a live API question, not a s
 
 | Source | Original | Status |
 |---|---|---|
-| **ADR 0001** | Bun runtime, Node 20 compatibility | **SUPERSEDED** — Python 3.12. Needs ADR 0004 |
+| **ADR 0001** | Bun runtime, Node 20 compatibility | **SUPERSEDED** by ADR 0004 — Python 3.12 |
 | *informal* | Teams bot bridges to a Claude Code session as the whole system | **SUPERSEDED** — LangGraph orchestrates, Agent SDK executes |
 | *informal* | Agent SDK moves to a separate credit pool | **INCORRECT** — paused. §6.4 |
 | *informal* | Write directly against Bot Framework protocol, skip the SDK | **SUPERSEDED** — use Agents SDK. §5 |
 | *research* | Agents SDK v0.9.0 is current | **STALE** — past 1.0. §5.1 |
-| *v2 §4.11* | Nested runs don't bill separately (stated as fact) | **UNVERIFIED** — undocumented. §9.2, §13 item 1 |
+| *v2 §4.11* | Nested runs don't bill separately (stated as fact) | **CONFIRMED** by measurement — 1 root/turn. §9.2 |
 | *informal* | Config includes `anthropic_api_key`; API key is a viable auth route | **INCORRECT** — shadows subscription auth. §6.2 |
 | *v2 build seq* | Eleven connectors, steps 1–8 | **SUPERSEDED** — two connectors, steps 1–5. §11, §12 |
 
@@ -554,9 +624,27 @@ Two repos: private working repo (permanent, full history including failures) and
 5. Respect §14, particularly *learn as you build* and *verified answers only*.
 6. Remember §3.1 — one physical core shapes almost every choice.
 7. §6.1 version pins and §6.3 build rules are mandatory. §8.4 mitigations are mandatory.
+8. Check §18 before writing anything down — put the fact in the document that owns it.
 
 **Ask before assuming.** Several expensive detours came from confident assumptions that turned out wrong. Uncertainty stated plainly is always cheaper.
 
+## 18. Which document owns which fact
+
+Four artifacts now describe this project. Without a rule they drift — and they have: ADR 0003 claimed `.gitignore` patterns that were never in the file, §11.2 carried the old repo name and the wrong ADR path, and §11.0's debt list stayed stale across three sessions. All four were found in a single audit on 4 August 2026.
+
+**The rule: every fact lives in exactly one document. The others link to it.**
+
+| Document | Owns | Never contains |
+|---|---|---|
+| **GOJO-MASTER.md** (this) | Architecture, stack choices, build sequence, current position, open questions | Step-by-step commands; narrative of what happened |
+| **docs/decisions/** (ADRs) | One decision each, with the reasoning at the time — including superseded ones | Current state; anything that changes after the decision |
+| **docs/build-log.md** | What was done, when, and what broke. Chronological, append-only | Decisions (they get an ADR); architecture |
+| **VPS / build-environment doc** *(planned)* | The box, Claude Code configuration, dev tooling, agentic memory for building | Anything Gojo runs in production |
+
+**Two consequences worth stating.** A decision recorded in an ADR is not repeated here — this document links to it. And when this document and an ADR conflict, **this document wins** (see the header), because ADRs are point-in-time and this is current.
+
+**The A/B boundary.** The build environment and Gojo's runtime are separate systems that share one VPS. They are coupled in exactly three places, all of which need guarding: **Claude Code's subscription credentials** serve both (§6.2 — a dev tool that sets `ANTHROPIC_API_KEY` silently rebills Gojo), **the single physical core** (§3.1 — dev tooling must be invocable, not resident), and **memory**, where build-session capture and Gojo's `knowledge/` corpus must never merge, because one is development history and the other carries business mail. Config bleed in the third direction is already closed: `setting_sources=[]` means Gojo's agents inherit nothing from the host environment.
+
 ---
 
-**Next action:** ADR 0004 (Python supersedes Bun), then the uv workspace scaffold, then step 1.
+**Next action:** build step 2 — the Teams surface. Check PyPI for the current `microsoft-agents-hosting-core` before pinning (§13 item 2).
