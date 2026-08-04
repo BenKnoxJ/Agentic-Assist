@@ -10,6 +10,7 @@ __pycache__/
 
 # Secrets
 .env
+.env.*
 *.pem
 *.key
 *-secret*
