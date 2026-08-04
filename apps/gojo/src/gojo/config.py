@@ -55,8 +55,15 @@ class Settings(BaseSettings):
     # as a single message with no "on it" noise.
     #
     # Must stay comfortably below Azure Bot Service's 10-15s response timeout
-    # (ADR 0006) - this budget is spent inside that window.
-    fast_reply_seconds: float = 5.0
+    # (ADR 0006) - this budget is spent inside that window. Do not raise this
+    # above ~8: overshooting the channel gives the user a 504, which is worse
+    # than an acknowledgement.
+    #
+    # Measured 4 Aug 2026: 3.5s with no session to resume, 5.9-7.1s once a
+    # session is being resumed. The SDK replays the transcript on every turn,
+    # so the cost grows with conversation length - raising this number buys
+    # time, it does not fix the trend. /compact is the actual fix.
+    fast_reply_seconds: float = 8.0
 
     # Where conversation state lives. SQLite, not Postgres: at one user's
     # write volume it is lower overhead, needs no extra process, and is a
