@@ -50,6 +50,14 @@ class Settings(BaseSettings):
     # lock the door, not remove it.
     allowed_user_ids: str = ""
 
+    # How long a Teams turn may run before Gojo says something rather than
+    # leaving you looking at a typing indicator. Under it, the answer arrives
+    # as a single message with no "on it" noise.
+    #
+    # Must stay comfortably below Azure Bot Service's 10-15s response timeout
+    # (ADR 0006) - this budget is spent inside that window.
+    fast_reply_seconds: float = 5.0
+
     @property
     def allowed_users(self) -> frozenset[str]:
         """Entra object IDs permitted to use the assistant."""

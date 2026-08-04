@@ -6,9 +6,16 @@ Activity to /api/messages and waits for a reply.
 ⚠ It waits for 10-15 seconds, depending on channel, then returns 504 to the
 user (Microsoft, "Manage a long-running operation"). A Megumi turn is ~5s
 today with no tools at max_turns=1; with connectors at step 3 and
-max_turns=8 it will exceed that routinely. So every turn is answered in two
-parts: an immediate acknowledgement inside the timeout, then the real reply
-sent proactively when the graph finishes. ADR 0006.
+max_turns=8 it will exceed that routinely.
+
+So a turn takes one of two paths. Fast: a typing indicator, then the answer
+as a single message on the same turn. Slow: the answer misses the budget, so
+Gojo says so, returns before the channel times out, and delivers the answer
+proactively when it arrives. ADR 0006.
+
+The typing indicator is deliberate. An unconditional "on it" for answers
+that arrive three seconds later is noise, and noise in a chat you use daily
+is a real cost.
 
 JWT validation is the SDK's, not ours. Hand-rolled validators routinely skip
 the iss and aud checks, which is the difference between validating a token
@@ -18,7 +25,7 @@ and validating the right one (5.2).
 import asyncio
 import logging
 
-from microsoft_agents.activity import ActivityTypes, ConversationReference
+from microsoft_agents.activity import Activity, ActivityTypes, ConversationReference
 from microsoft_agents.hosting.core import (
     AgentApplication,
     ApplicationOptions,
@@ -65,6 +72,12 @@ def is_authorised(
 _in_flight: set[asyncio.Task] = set()
 
 
+def _track(task: asyncio.Task) -> None:
+    """Hold a strong reference until the task finishes."""
+    _in_flight.add(task)
+    task.add_done_callback(_in_flight.discard)
+
+
 async def deliver_reply(
     adapter, agent_id: str, reference: ConversationReference, text: str
 ) -> bool:
@@ -99,6 +112,7 @@ def build_agent_app(
     connections,
     allowed_users: frozenset[str],
     expected_tenant: str,
+    fast_reply_seconds: float,
 ) -> AgentApplication:
     """Wire the Teams surface onto an already-compiled graph.
 
@@ -112,6 +126,9 @@ def build_agent_app(
             Authorization from this and refuses to start without it.
         allowed_users: Entra object IDs permitted to use Gojo. Empty denies all.
         expected_tenant: the tenant every conversation must belong to.
+        fast_reply_seconds: how long to wait for an answer before sending
+            an acknowledgement instead. Must stay under the channel's
+            response timeout.
     """
     # MemoryStorage holds the SDK's own conversation state, which is separate
     # from LangGraph's. In-process, so it does not survive a restart - matching
@@ -121,18 +138,20 @@ def build_agent_app(
         connection_manager=connections,
     )
 
-    async def _reply_later(reference: ConversationReference, message: str) -> None:
-        """Run the graph, then deliver the answer as a new outbound message."""
+    async def _run_graph(message: str) -> str:
+        """Run one turn. Never raises - a failure becomes a reply."""
         try:
             result = await graph.ainvoke({"message": message, "steps": [], "findings": []})
-            reply = result["reply"]
+            return result["reply"]
         except Exception:
             # 10.4: a dead upstream degrades the answer, it does not kill the
             # process. The user gets told rather than left waiting forever.
             logger.exception("graph failed for a Teams turn")
-            reply = "Something went wrong on my side. Nothing was changed."
+            return "Something went wrong on my side. Nothing was changed."
 
-        await deliver_reply(adapter, agent_id, reference, reply)
+    async def _deliver_when_done(task: asyncio.Task, reference: ConversationReference) -> None:
+        """Wait for a slow turn and send its answer as a new message."""
+        await deliver_reply(adapter, agent_id, reference, await task)
 
     @app.activity(ActivityTypes.message)
     async def on_message(context: TurnContext, state: TurnState) -> bool:
@@ -159,11 +178,26 @@ def build_agent_app(
         reference = context.activity.get_conversation_reference()
         message = context.activity.text or ""
 
-        await context.send_activity(ACK)
+        # A typing indicator rather than a message. Most turns finish inside
+        # the budget below, and a chat littered with "on it" for answers that
+        # arrive three seconds later is worse than no acknowledgement at all.
+        await context.send_activity(Activity(type=ActivityTypes.typing))
 
-        task = asyncio.create_task(_reply_later(reference, message))
-        _in_flight.add(task)
-        task.add_done_callback(_in_flight.discard)
+        task = asyncio.create_task(_run_graph(message))
+        _track(task)
+
+        # Spend part of Azure Bot Service's response window waiting. If the
+        # answer lands in time it goes back as a single message on this turn -
+        # no acknowledgement, no proactive call.
+        done, _ = await asyncio.wait({task}, timeout=fast_reply_seconds)
+        if task in done:
+            await context.send_activity(task.result())
+            return True
+
+        # Slow turn: say so, return before the channel times out, and deliver
+        # the answer proactively when it arrives (ADR 0006).
+        await context.send_activity(ACK)
+        _track(asyncio.create_task(_deliver_when_done(task, reference)))
         return True
 
     return app

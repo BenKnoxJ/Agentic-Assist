@@ -89,6 +89,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             connections,
             settings.allowed_users,
             settings.teams_tenant_id,
+            settings.fast_reply_seconds,
         )
         logger.info(
             "Teams surface enabled for tenant %s, %d authorised user(s)",

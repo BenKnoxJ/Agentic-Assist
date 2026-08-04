@@ -1,6 +1,6 @@
 # Gojo — Master Document
 
-**Version:** 3.2 — build in progress
+**Version:** 3.3 — build in progress
 **Date:** 4 August 2026
 **Owner:** Ben Knox (GitHub: `BenKnoxJ`)
 **Repo:** `BenKnoxJ/Agentic-Assist` (private monorepo)
@@ -10,7 +10,9 @@
 >
 > **What changed in v3:** scope cut to a shippable v1. The retrieval layer (Postgres, pgvector, embeddings, reranking, evals) researched and documented but not built — *this deferral is superseded by v3.2 below; retrieval is now committed as step 6, see §12.* Agent topology settled. Four corrections applied from external review.
 >
-> **What changed in v3.2:** memory promoted from a folder of markdown to a **three-layer architecture** (§9.1), and retrieval moved from *deferred* to **committed and sequenced as build step 6** (§12) — Postgres 17 + pgvector + Voyage. Build step 1 is complete. §13 item 1 answered by measurement. §18 added to stop document drift.
+> **What changed in v3.2:** memory promoted from a folder of markdown to a **three-layer architecture** (§9.1), and retrieval moved from *deferred* to **committed and sequenced as build step 6** (§12) — Postgres 17 + pgvector + Voyage. §13 item 1 answered by measurement. §18 added to stop document drift.
+>
+> **What changed in v3.3:** **build step 2 is complete** — Gojo answers from Teams on a phone, behind JWT validation and a single-user allow-list. **Steps 3 and 4 are swapped** (ADR 0007): persistence, sessions and systemd now come before connectors, because using the system showed continuity and surviving a restart matter before tenant-wide mail permissions do.
 
 ---
 
@@ -439,14 +441,16 @@ Six properties, deliberately no more. This exists to stop scope creep dressed as
 |---|---|---|
 | **1** | **Scaffold + model in the graph** | uv workspace, FastAPI, LangGraph graph with a real model node. Testable via `curl` |
 | **2** | **Teams surface** | Agents SDK wired, JWT validated. You talk to Gojo from your phone and it replies |
-| **3** | **Two read connectors** | Graph mail (`Mail.Read` only) + Jira. Gather agent returns real findings. Access policy applied |
-| **4** | **Persistence + service** | SQLite checkpointer, systemd unit. Properties 1 and 2 true |
+| **3** | **Persistence + service** | SQLite checkpointer keyed by Teams conversation, `ClaudeSDKClient` sessions, systemd unit, `/new` and `/compact`. Properties 1 and 2 true |
+| **4** | **Two read connectors** | Graph mail (`Mail.Read` only) + Jira. Gather agent returns real findings. Access policy applied |
 | **5** | **Approval gates + write scopes** | `interrupt()` before writes, idempotency keys, `Mail.Send` granted. Property 6 true |
 | **6** | **Memory + retrieval** | Postgres 17 + pgvector, Voyage embeddings, evals. §12 |
 
+**Steps 3 and 4 were swapped on 4 August 2026 — ADR 0007.** Using the system after step 2 showed that conversation continuity and surviving a restart matter before tenant-wide mail permissions do. Older ADRs and code comments referring to "step 4" for persistence were correct when written; this table is current (§18).
+
 **At step 5 you have a complete, production-grade system you use every day.** Then you use it for a fortnight and let real gaps drive what comes next. **Step 6 is committed, not speculative** — but it is deliberately last, because it needs a corpus that steps 2–5 produce. See §12.
 
-### 11.0 Current position — step 1 complete
+### 11.0 Current position — step 2 complete
 
 | Piece | State |
 |---|---|
@@ -458,14 +462,16 @@ Six properties, deliberately no more. This exists to stop scope creep dressed as
 | FastAPI endpoint | ✅ `POST /chat`, `GET /health`, both paths verified by curl with real inference |
 | Agent isolation | ✅ `setting_sources=[]` — agents inherit nothing from the host Claude Code environment |
 | CI | ✅ ruff + pytest on push and PR; pip-audit advisory |
+| **Teams surface** | ✅ App package installed, JWT enforced, allow-list of one user, two-part reply proven on a real channel |
 
 **Outstanding debt from v3.1: cleared.** ADR 0004 written, this document moved to `docs/`, `build-log.md` current to 4 August, `setting_sources=[]` applied.
 
-**Carried debt — clear before step 3:**
+**Carried debt — clear during step 3:**
 
-1. **No runaway-loop guard.** §9.3 mandates *both* an explicit `recursion_limit` and a state budget field. Neither exists; LangGraph's default 25 applies implicitly. §9.3 ranks runaway loops the best-evidenced failure mode, and connectors at step 3 are what make loops expensive
+1. **No runaway-loop guard.** §9.3 mandates *both* an explicit `recursion_limit` and a state budget field. Neither exists; LangGraph's default 25 applies implicitly. §9.3 ranks runaway loops the best-evidenced failure mode, and connectors at step 4 are what make loops expensive
 2. **No timeout on graph invocation.** A hung Agent SDK subprocess hangs the request indefinitely
-3. **`print()` not structured logging** — step 4's systemd journal wants levels and correlation IDs
+3. **`print()` not structured logging** — the systemd journal wants levels and correlation IDs
+5. **`runner.py` uses `query()`, not `ClaudeSDKClient`.** §6.2 specifies the latter for Megumi and Sukuna; sessions depend on it (ADR 0007)
 4. **README is one line.** §16 names it the first thing a portfolio reader sees
 
 **Repo layout as built:**
