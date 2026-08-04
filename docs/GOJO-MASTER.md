@@ -206,6 +206,10 @@ cloud creds → ANTHROPIC_AUTH_TOKEN → ANTHROPIC_API_KEY
 
 **How it composes with LangGraph:** a LangGraph node is a plain Python function. Inside it, you `await` an Agent SDK call and put the result into graph state. That's the whole integration.
 
+**⚠ Do not use LangGraph's prebuilt agent.** `create_react_agent`, `ToolNode` and `bind_tools` are what most LangGraph material teaches, and they are wrong here twice over: they require a LangChain chat model authenticating with `ANTHROPIC_API_KEY` — which §6.2 forbids and `config.py` raises on — and they duplicate the agent loop the SDK already provides. **Tools are passed to the Agent SDK, never bound to LangGraph.** Verified against langgraph 1.2.10, which does ship `langgraph.prebuilt`; the constraint is architectural, not a version gap.
+
+**LangGraph primitives this project should use, and when:** `interrupt()` and `Command(resume=...)` for the approval gate at step 5, and `BaseStore` (`aput`/`aget`/`asearch`) for cross-thread memory at step 6. The distinction matters: the **checkpointer is per-thread** and is what `/new` clears; the **store is cross-thread** and is what must survive it (§9.1).
+
 **Division of responsibility — the thing to internalise:**
 
 > **LangGraph owns control flow.** What runs, in what order, with what state, when to stop and ask.

@@ -56,6 +56,29 @@ Azure Bot Service  ──POST──▶  FastAPI /api/messages   (JWT validated, 
 | **Claude Agent SDK** | Execution. Given a scoped job, do it |
 | **Connectors** | Fetching and acting. They never reason |
 
+### Why not `create_react_agent`
+
+LangGraph ships a prebuilt ReAct agent — `create_react_agent`, `ToolNode`,
+`bind_tools` — and most tutorials start there. This project deliberately
+does not, for two reasons.
+
+It requires a **LangChain chat model**, which authenticates with
+`ANTHROPIC_API_KEY`. That key sits *above* the subscription token in
+Claude's credential precedence chain, so adopting the prebuilt pattern would
+have silently moved every inference call onto pay-as-you-go API billing
+while appearing to work normally. The application asserts that key is unset
+at boot and refuses to start otherwise.
+
+It also duplicates the agent loop. The Claude Agent SDK already provides
+tool use, context management and the loop itself; running LangGraph's on top
+would mean two agent loops, one of them redundant.
+
+So **tools are given to the Agent SDK, not bound to LangGraph.** LangGraph
+is kept deliberately narrow — routing, checkpointing, interrupts, recursion
+limits — which is the whole of what it was adopted for.
+
+### Agent boundaries
+
 Agents are split by **context boundary, not by system**. One agent per API
 would be a connector taxonomy wearing an agent costume — and every hop
 multiplies the failure rate, so a boundary has to buy something. The
