@@ -22,6 +22,8 @@ from microsoft_agents.hosting.fastapi import (
 )
 from pydantic import BaseModel, Field
 
+from gojo.commands import handle as handle_command
+from gojo.commands import is_command
 from gojo.config import assert_subscription_auth, get_settings
 from gojo.orchestrator import GraphTimeout, build_graph, run_turn
 from gojo.state import Intent
@@ -166,6 +168,12 @@ async def messages(request: Request) -> Response:
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
     """Run one message through the orchestrator and return the reply."""
+    # Same command handling as Teams, so behaviour can be exercised from curl
+    # rather than only from a phone.
+    if is_command(request.message):
+        reply = await handle_command(app.state.graph, request.message, request.thread_id)
+        return ChatResponse(reply=reply, intent="unknown", steps=["command"])
+
     try:
         result = await run_turn(app.state.graph, request.message, request.thread_id)
     except GraphTimeout as exc:

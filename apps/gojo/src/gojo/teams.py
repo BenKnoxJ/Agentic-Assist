@@ -34,6 +34,8 @@ from microsoft_agents.hosting.core import (
     TurnState,
 )
 
+from gojo.commands import handle as handle_command
+from gojo.commands import is_command
 from gojo.orchestrator import GraphTimeout, run_turn
 
 logger = logging.getLogger(__name__)
@@ -185,17 +187,24 @@ def build_agent_app(
             await context.send_activity(REFUSAL)
             return True
 
+        message = (context.activity.text or "").strip()
+        thread_id = context.activity.conversation.id
+
+        # Commands are answered on this turn and never reach an agent. They
+        # are fast, so there is no acknowledgement and no proactive delivery.
+        if is_command(message):
+            await context.send_activity(await handle_command(graph, message, thread_id))
+            return True
+
         # Captured before returning: once this turn ends the context is gone,
         # and the reference is the only way back to this conversation.
         reference = context.activity.get_conversation_reference()
-        message = context.activity.text or ""
 
         # A typing indicator rather than a message. Most turns finish inside
         # the budget below, and a chat littered with "on it" for answers that
         # arrive three seconds later is worse than no acknowledgement at all.
         await context.send_activity(Activity(type=ActivityTypes.typing))
 
-        thread_id = context.activity.conversation.id
         task = asyncio.create_task(_run_graph(message, thread_id))
         _track(task)
 

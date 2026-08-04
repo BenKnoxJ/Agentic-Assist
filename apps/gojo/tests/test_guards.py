@@ -27,7 +27,9 @@ async def test_budget_exhausted_returns_gracefully_without_calling_the_agent(
     """Over budget must not invoke the SDK at all - that is the whole point."""
     called = False
 
-    async def should_not_run(message: str, resume: str | None = None) -> AgentResult:
+    async def should_not_run(
+        message: str, resume: str | None = None, summary: str = ""
+    ) -> AgentResult:
         nonlocal called
         called = True
         return AgentResult(text="should never be seen")
@@ -45,7 +47,9 @@ async def test_budget_exhausted_returns_gracefully_without_calling_the_agent(
 
 
 async def test_under_budget_runs_and_increments(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake(message: str, resume: str | None = None) -> AgentResult:
+    async def fake(
+        message: str, resume: str | None = None, summary: str = ""
+    ) -> AgentResult:
         return AgentResult(text="ok", session_id="s1")
 
     monkeypatch.setattr(orchestrator, "gather", fake)
@@ -69,7 +73,9 @@ async def test_timeout_raises_rather_than_hanging(
 ) -> None:
     """A hung agent must not hold the request open indefinitely."""
 
-    async def never_returns(message: str, resume: str | None = None) -> AgentResult:
+    async def never_returns(
+        message: str, resume: str | None = None, summary: str = ""
+    ) -> AgentResult:
         await asyncio.sleep(30)
         return AgentResult(text="too late")
 

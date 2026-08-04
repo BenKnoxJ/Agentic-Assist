@@ -22,7 +22,9 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     happened to be configured on the machine running them.
     """
 
-    async def fake_gather(message: str, resume: str | None = None) -> AgentResult:
+    async def fake_gather(
+        message: str, resume: str | None = None, summary: str = ""
+    ) -> AgentResult:
         # Mirrors the real signature: the node passes resume= and reads
         # .session_id back, so a str stub would hide a wiring break.
         return AgentResult(

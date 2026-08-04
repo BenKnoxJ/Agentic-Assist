@@ -465,7 +465,9 @@ Six properties, deliberately no more. This exists to stop scope creep dressed as
 | **Teams surface** | ✅ App package installed, JWT enforced, allow-list of one user, two-part reply proven on a real channel |
 | Conversation continuity | ✅ `AsyncSqliteSaver` keyed by Teams conversation + `ClaudeSDKClient` sessions. Verified across turns and a simulated restart |
 | systemd service | ✅ `gojo.service`, enabled at boot, restart-survival verified (properties 1 and 2 true) |
-| **`/new`, `/compact`** | ❌ Remaining in step 3, with the timeout, loop guard and structured logging |
+| Runaway guards | ✅ 180s wall clock, explicit `recursion_limit`, 5 agent calls/turn with a graceful exit (9.3's "use both") |
+| `/new`, `/compact`, `/help` | ✅ Verified live: compacted a conversation, carried the summary into a fresh session, answered from it |
+| **Structured logging** | ◐ Levels reach the journal; JSON and correlation IDs still outstanding |
 
 **Outstanding debt from v3.1: cleared.** ADR 0004 written, this document moved to `docs/`, `build-log.md` current to 4 August, `setting_sources=[]` applied.
 

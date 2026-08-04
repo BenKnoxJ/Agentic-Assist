@@ -45,3 +45,8 @@ class GojoState(TypedDict):
     # Agent invocations used this turn. Plain int, no reducer: nodes
     # overwrite it, and new_turn resets it to 0. See 9.3.
     agent_calls: int
+
+    # Set by /compact: what the previous session amounted to, carried into
+    # the next one. This is 6.3 rule 3 in practice - the gist survives, the
+    # transcript does not.
+    summary: str

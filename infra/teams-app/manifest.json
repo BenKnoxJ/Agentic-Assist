@@ -15,7 +15,7 @@
   },
   "name": {
     "short": "Gojo",
-    "full": "Gojo — agentic work assistant"
+    "full": "Gojo \u2014 agentic work assistant"
   },
   "description": {
     "short": "Reads across your work systems and tells you what needs attention.",
@@ -25,11 +25,39 @@
   "bots": [
     {
       "botId": "2b6bad70-f62b-4148-9138-20c1d71319ca",
-      "scopes": ["personal"],
+      "scopes": [
+        "personal"
+      ],
       "supportsFiles": false,
-      "isNotificationOnly": false
+      "isNotificationOnly": false,
+      "commandLists": [
+        {
+          "scopes": [
+            "personal"
+          ],
+          "commands": [
+            {
+              "title": "new",
+              "description": "Start a fresh conversation"
+            },
+            {
+              "title": "compact",
+              "description": "Summarise so far and carry on"
+            },
+            {
+              "title": "help",
+              "description": "List what I can do"
+            }
+          ]
+        }
+      ]
     }
   ],
-  "permissions": ["identity", "messageTeamMembers"],
-  "validDomains": ["cc-sfq4tema454pu.uksouth.cloudapp.azure.com"]
+  "permissions": [
+    "identity",
+    "messageTeamMembers"
+  ],
+  "validDomains": [
+    "cc-sfq4tema454pu.uksouth.cloudapp.azure.com"
+  ]
 }

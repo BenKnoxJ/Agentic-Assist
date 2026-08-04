@@ -60,7 +60,11 @@ async def megumi(state: GojoState) -> dict:
         return {"findings": [BUDGET_EXHAUSTED], "steps": ["megumi:over-budget"]}
 
     print("[megumi] gathering")
-    result = await gather(state["message"], resume=state.get("session_id"))
+    result = await gather(
+        state["message"],
+        resume=state.get("session_id"),
+        summary=state.get("summary", ""),
+    )
 
     # The only spend signal that crosses the subprocess boundary - LangSmith
     # cannot see inside it (9.2), so it is logged here or nowhere.

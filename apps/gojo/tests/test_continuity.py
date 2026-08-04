@@ -19,7 +19,9 @@ class RecordingGather:
         self.resumes: list[str | None] = []
         self.turn = 0
 
-    async def __call__(self, message: str, resume: str | None = None) -> AgentResult:
+    async def __call__(
+        self, message: str, resume: str | None = None, summary: str = ""
+    ) -> AgentResult:
         self.resumes.append(resume)
         self.turn += 1
         return AgentResult(text=f"answer {self.turn}", session_id=f"session-{self.turn}")
