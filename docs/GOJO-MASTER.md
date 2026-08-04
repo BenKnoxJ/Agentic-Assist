@@ -450,7 +450,7 @@ Six properties, deliberately no more. This exists to stop scope creep dressed as
 
 **At step 5 you have a complete, production-grade system you use every day.** Then you use it for a fortnight and let real gaps drive what comes next. **Step 6 is committed, not speculative** — but it is deliberately last, because it needs a corpus that steps 2–5 produce. See §12.
 
-### 11.0 Current position — step 2 complete
+### 11.0 Current position — step 2 complete, step 3 in progress
 
 | Piece | State |
 |---|---|
@@ -463,6 +463,8 @@ Six properties, deliberately no more. This exists to stop scope creep dressed as
 | Agent isolation | ✅ `setting_sources=[]` — agents inherit nothing from the host Claude Code environment |
 | CI | ✅ ruff + pytest on push and PR; pip-audit advisory |
 | **Teams surface** | ✅ App package installed, JWT enforced, allow-list of one user, two-part reply proven on a real channel |
+| Conversation continuity | ✅ `AsyncSqliteSaver` keyed by Teams conversation + `ClaudeSDKClient` sessions. Verified across turns and a simulated restart |
+| **systemd, `/new`, `/compact`** | ❌ Remaining in step 3 |
 
 **Outstanding debt from v3.1: cleared.** ADR 0004 written, this document moved to `docs/`, `build-log.md` current to 4 August, `setting_sources=[]` applied.
 
@@ -471,8 +473,8 @@ Six properties, deliberately no more. This exists to stop scope creep dressed as
 1. **No runaway-loop guard.** §9.3 mandates *both* an explicit `recursion_limit` and a state budget field. Neither exists; LangGraph's default 25 applies implicitly. §9.3 ranks runaway loops the best-evidenced failure mode, and connectors at step 4 are what make loops expensive
 2. **No timeout on graph invocation.** A hung Agent SDK subprocess hangs the request indefinitely
 3. **`print()` not structured logging** — the systemd journal wants levels and correlation IDs
-5. **`runner.py` uses `query()`, not `ClaudeSDKClient`.** §6.2 specifies the latter for Megumi and Sukuna; sessions depend on it (ADR 0007)
 4. **README is one line.** §16 names it the first thing a portfolio reader sees
+5. ~~`runner.py` uses `query()`, not `ClaudeSDKClient`~~ — **done 4 Aug 2026.** Sessions depend on it (ADR 0007)
 
 **Repo layout as built:**
 
@@ -579,7 +581,8 @@ Steps 2–5 produce the corpus as a side effect of use. Step 6 then builds retri
 6. **Jira and Zoho API access** at Conversant's licence tier — account verification, not research.
 7. **Graph granular file permissions** — whether a `Files.Read.All` equivalent to `Sites.Selected` exists.
 8. **Bridging Agent SDK traces into LangSmith.** Agent reasoning is currently invisible (§9.2). Whether a `@traceable` span around the runner is sufficient, or SDK response metadata must be fed in explicitly, is untested. Affects §10 property 3.
-9. **uvloop vs the Agent SDK — root cause.** ADR 0005 pins `loop="asyncio"` because SDK calls fail deterministically under uvloop. The mechanism is inferred (anyio subprocess handling), not established. Revisit if the SDK changes transport.
+9. **Agent-first vs routed control flow — decide at step 5, not before.** §6.1 says the orchestrator makes no decisions; in practice `classify` substring-matches seven verbs, which is a poor proxy for "this will change something" ("check if Dave replied" is read-only and contains no action word; "update my notes" is read-only and contains one). The Agent SDK exposes `can_use_tool`, an async Allow/Deny callback fired before any tool runs — a gate at the moment a write is actually attempted rather than guessed from phrasing. That is likely the better design, and it is a **step 5** decision because the gate is what step 5 builds. Nothing in steps 3 and 4 is wasted either way. Raised 4 August 2026 while building continuity; parked deliberately.
+10. **uvloop vs the Agent SDK — root cause.** ADR 0005 pins `loop="asyncio"` because SDK calls fail deterministically under uvloop. The mechanism is inferred (anyio subprocess handling), not established. Revisit if the SDK changes transport.
 
 ## 14. Working principles
 
