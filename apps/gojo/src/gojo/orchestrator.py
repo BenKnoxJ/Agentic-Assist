@@ -5,11 +5,20 @@ and what happens with the result.
 """
 
 import asyncio
+import logging
 
 from langgraph.graph import END, START, StateGraph
 
 from gojo.agents.megumi import gather
+from gojo.config import get_settings
 from gojo.state import GojoState
+
+logger = logging.getLogger(__name__)
+
+BUDGET_EXHAUSTED = (
+    "I stopped before finishing - this turn used its whole allowance of "
+    "agent steps. Nothing was changed. Try narrowing the question."
+)
 
 ACTION_WORDS = ("send", "reply", "create", "update", "close", "delete", "assign")
 
@@ -20,7 +29,7 @@ def new_turn(state: GojoState) -> dict:
     With a checkpointer the previous turn's state is still here. Steps and
     findings describe one turn and must not carry over; session_id must.
     """
-    return {"steps": None, "findings": None, "reply": ""}
+    return {"steps": None, "findings": None, "reply": "", "agent_calls": 0}
 
 
 def classify(state: GojoState) -> dict:
@@ -42,12 +51,28 @@ async def megumi(state: GojoState) -> dict:
     Carries session_id in and back out, which is what makes a conversation
     continue rather than restart on every message.
     """
+    used = state.get("agent_calls", 0)
+    budget = get_settings().max_agent_calls_per_turn
+    if used >= budget:
+        # 9.3: route to a graceful exit rather than being killed mid-work.
+        # The user is told, and nothing is left half-done.
+        logger.warning("agent budget exhausted: %d calls used this turn", used)
+        return {"findings": [BUDGET_EXHAUSTED], "steps": ["megumi:over-budget"]}
+
     print("[megumi] gathering")
     result = await gather(state["message"], resume=state.get("session_id"))
+
+    # The only spend signal that crosses the subprocess boundary - LangSmith
+    # cannot see inside it (9.2), so it is logged here or nowhere.
+    logger.info(
+        "megumi turn: cost_usd=%s sdk_turns=%s", result.cost_usd, result.num_turns
+    )
+
     return {
         "findings": [result.text],
         "steps": ["megumi"],
         "session_id": result.session_id,
+        "agent_calls": used + 1,
     }
 
 
@@ -63,6 +88,45 @@ def respond(state: GojoState) -> dict:
     findings = state["findings"]
     body = findings[0] if findings else "(no findings)"
     return {"reply": body, "steps": ["respond"]}
+
+
+class GraphTimeout(Exception):
+    """The graph exceeded its wall-clock budget."""
+
+
+async def run_turn(graph, message: str, thread_id: str) -> dict:
+    """Invoke the graph for one turn, with both 9.3 guards applied.
+
+    Every caller goes through here. Applying the timeout and recursion limit
+    at each call site instead would mean applying them in one surface and
+    forgetting them in the next - which is how a guard ends up protecting
+    /chat but not the thing that actually faces Teams.
+
+    Raises:
+        GraphTimeout: the turn exceeded graph_timeout_seconds. The Agent SDK
+            subprocess is abandoned rather than awaited; the alternative is a
+            request that never returns.
+    """
+    settings = get_settings()
+    config = {
+        "configurable": {"thread_id": thread_id},
+        "recursion_limit": settings.recursion_limit,
+    }
+    initial = {"message": message, "steps": [], "findings": []}
+
+    try:
+        return await asyncio.wait_for(
+            graph.ainvoke(initial, config), timeout=settings.graph_timeout_seconds
+        )
+    except TimeoutError as exc:
+        logger.error(
+            "graph timed out after %ss on thread %s",
+            settings.graph_timeout_seconds,
+            thread_id,
+        )
+        raise GraphTimeout(
+            f"turn exceeded {settings.graph_timeout_seconds}s"
+        ) from exc
 
 
 def build_graph(checkpointer=None):

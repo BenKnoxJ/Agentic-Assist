@@ -70,6 +70,24 @@ class Settings(BaseSettings):
     # single file to back up (6.1). Gitignored via checkpoints/.
     checkpoint_path: str = "checkpoints/gojo.sqlite"
 
+    # 9.3 mandates BOTH guards below, because they catch different failures.
+    #
+    # Wall clock. The only thing that catches a *hung* Agent SDK subprocess:
+    # a stuck call has no turn count and no recursion, it simply never
+    # returns. Generous on purpose - this is a backstop, not a latency
+    # target; fast_reply_seconds handles the user-facing side.
+    graph_timeout_seconds: float = 180.0
+
+    # LangGraph's framework guard against a cyclic graph. 25 is its default;
+    # setting it explicitly means a future default change cannot move it
+    # underneath us.
+    recursion_limit: int = 25
+
+    # Agent invocations allowed in one turn. Catches an agent that is
+    # progressing but should not keep going - the runaway loop 9.3 ranks as
+    # the best-evidenced failure mode of single-VPS agent systems.
+    max_agent_calls_per_turn: int = 5
+
     @property
     def allowed_users(self) -> frozenset[str]:
         """Entra object IDs permitted to use the assistant."""

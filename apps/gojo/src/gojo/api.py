@@ -23,7 +23,7 @@ from microsoft_agents.hosting.fastapi import (
 from pydantic import BaseModel, Field
 
 from gojo.config import assert_subscription_auth, get_settings
-from gojo.orchestrator import build_graph
+from gojo.orchestrator import GraphTimeout, build_graph, run_turn
 from gojo.state import Intent
 from gojo.teams import build_agent_app, in_flight_count
 
@@ -166,13 +166,10 @@ async def messages(request: Request) -> Response:
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
     """Run one message through the orchestrator and return the reply."""
-    initial = {"message": request.message, "steps": [], "findings": []}
-    # With a checkpointer compiled in, LangGraph requires a thread id: it is
-    # the key the conversation is stored under.
-    config = {"configurable": {"thread_id": request.thread_id}}
-
     try:
-        result = await app.state.graph.ainvoke(initial, config)
+        result = await run_turn(app.state.graph, request.message, request.thread_id)
+    except GraphTimeout as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 - contained, see 10.4
         # A dead upstream degrades the answer; it does not kill the process.
         raise HTTPException(status_code=502, detail=f"orchestrator failed: {exc}") from exc

@@ -34,6 +34,8 @@ from microsoft_agents.hosting.core import (
     TurnState,
 )
 
+from gojo.orchestrator import GraphTimeout, run_turn
+
 logger = logging.getLogger(__name__)
 
 ACK = "On it — give me a moment."
@@ -145,11 +147,14 @@ def build_agent_app(
         session follow the chat rather than the process.
         """
         try:
-            result = await graph.ainvoke(
-                {"message": message, "steps": [], "findings": []},
-                {"configurable": {"thread_id": thread_id}},
-            )
+            result = await run_turn(graph, message, thread_id)
             return result["reply"]
+        except GraphTimeout:
+            logger.error("turn timed out on thread %s", thread_id)
+            return (
+                "That took too long and I stopped it. Nothing was changed - "
+                "try a narrower question."
+            )
         except Exception:
             # 10.4: a dead upstream degrades the answer, it does not kill the
             # process. The user gets told rather than left waiting forever.

@@ -41,3 +41,7 @@ class GojoState(TypedDict):
     # Survives between turns via the checkpointer. None means "start fresh",
     # which is also what /new restores.
     session_id: str | None
+
+    # Agent invocations used this turn. Plain int, no reducer: nodes
+    # overwrite it, and new_turn resets it to 0. See 9.3.
+    agent_calls: int
