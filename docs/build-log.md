@@ -75,3 +75,49 @@ Hardened Ubuntu 24.04 · 4GB swap · Bun 1.3.14 + Node 20.20.2 · SSH-auth'd Git
 
 ### Session 2 result
 Agentic-Assist on a Python uv workspace · langgraph 1.2.10 + langchain-core 1.5.2 + fastapi 0.141.1, CVE floors cleared · LangGraph orchestrator (classify, megumi, sukuna, respond) routing verified read and write · LangSmith tracing live (EU, Gojo-Agent-OS) · Agent SDK 0.2.128 behind agents/runner.py · ANTHROPIC_API_KEY billing guard in config.py · ADR 0004 supersedes ADR 0001.
+
+## Session 3 — Steps 1, 2 and 3 complete (FastAPI, Teams, persistence)
+
+**Date:** 2026-08-04
+**Goal:** Finish step 1, build the Teams surface, then persistence and service management.
+**Outcome:** Gojo answers from Teams on a phone, behind JWT validation and a single-user allow-list, runs under systemd, and remembers conversations across restarts. Steps 1-3 done; step 4 blocked on Azure permissions.
+
+### 1. FastAPI surface — step 1 complete
+- `POST /chat`, `GET /health`. Graph compiled once in lifespan; auth asserted at boot.
+- **Gotcha — ADR 0005:** every Agent SDK call fails under uvloop with "Reached maximum number of turns", 3/3 against 3/3 under asyncio. `uvicorn[standard]` selects uvloop by default. Pinned `loop="asyncio"` in a module entrypoint so a systemd unit cannot silently reintroduce it. Root cause inferred, not established.
+
+### 2. Teams surface — step 2 complete
+- Agents SDK **1.3.0** (PyPI-verified; the doc's 1.1.0 was two minor versions stale). `hosting-teams` requires py>=3.12.
+- **ADR 0006:** turns answered in two parts — typing indicator and a single reply inside the budget, else an acknowledgement and a proactive delivery. Azure Bot Service returns 504 after 10-15s.
+- Config keys are `CLIENTID`/`TENANTID`/`CLIENTSECRET`, **not** Bot Framework v4's `MicrosoftAppType`/`MicrosoftAppTenantId`.
+- **Security gotcha:** `/api/messages` was registered without `jwt_authorization_decorator` and was publicly unauthenticated between two commits. The adapter does not authenticate on its own. Now 401 for unsigned and bogus tokens, verified from the public internet.
+- **Gotcha:** `continue_conversation` — `ChannelAdapter` takes a `ConversationReference`, `ChannelServiceAdapter` (which `CloudAdapter` inherits) overrides it to take an Activity. Acknowledgements arrived, answers never did. The error named neither the argument nor the method.
+- **Gotcha:** `MsalConnectionManager` key must be the literal `"SERVICE_CONNECTION"`. `AgentApplication` needs both `ApplicationOptions.storage` and `connection_manager`.
+- Teams app package required — a bot with the channel enabled is reachable but not installable. `packageName` was removed in manifest schema 1.17 and `additionalProperties` is false. Build now validates against a vendored schema.
+- **Authorisation:** JWT proves the message came from Bot Service, not who sent it. Added an Entra object-ID allow-list plus a tenant check, failing closed on every missing value.
+
+### 3. Persistence and service — step 3 complete
+- **ADR 0007:** swapped steps 3 and 4. Using the system showed continuity and restart-survival matter before tenant-wide mail permissions.
+- `AsyncSqliteSaver` keyed by Teams conversation id; `runner.py` moved from `query()` to `ClaudeSDKClient` for sessions. The SDK owns the transcript, the graph stores only the session id (6.3 rule 3).
+- **Gotcha:** `operator.add` reducers would have grown state for the life of a conversation once persisted. A `new_turn` node clears per-turn fields.
+- systemd unit; **subscription auth works under systemd with no `CLAUDE_CODE_OAUTH_TOKEN`**, contrary to 6.2 — the unit runs as `ccuser` and reads stored credentials, which is why `ProtectHome` must stay unset.
+- **Gotcha:** `StartLimitBurst`/`StartLimitIntervalSec` belong in `[Unit]`. systemd ignores them with a warning in `[Service]`, so the crash-loop guard did nothing.
+- Runaway guards: 180s wall clock, explicit `recursion_limit`, 5 agent calls per turn with a graceful exit.
+- `/new`, `/compact`, `/help`. Commands never reach an agent.
+- **Gotcha:** every `logger.info` was being dropped — uvicorn configures only its own loggers. Structured logging with per-turn correlation ids now reaches the journal, including from the SDK's own logger.
+- **Gotcha:** `ApplicationOptions.start_typing_timer` defaults to True. The SDK's own typing loop re-sends via reply-to-activity, which Teams rejects with 400, surfacing as "Exception caught" while turns succeeded.
+
+### 4. Measurements
+- LangSmith: **1 root run per turn** (8 turns / 8 roots), retiring 13 item 1. Break-even was ~11.
+- **Agent reasoning is invisible in LangSmith** — all runs are `chain` type, zero tokens. The SDK subprocess does not report back. New open item, 13 item 8.
+- Turn cost: **$0.009 fresh, $0.036-0.052 on a long session**. Session replay is real and shows in tokens, not latency. `/compact` and `/new` control it.
+- Turn latency 3.4-6.5s; fast-reply budget raised 5s -> 8s.
+
+### 5. Step 4 blocked, and a correction
+- **8.4's mandated mitigation is deprecated.** Application Access Policies are replaced by RBAC for Applications. Following the doc as written would have granted tenant-wide `Mail.Read` and scoped nothing — Entra and RBAC grants are a union.
+- Runbook with real values: `infra/graph-mail-rbac.ps1`. **Do not grant `Mail.Read` in Entra.**
+
+### Session 3 result
+Steps 1-3 complete · 46 tests · Teams live behind JWT + single-user allow-list · systemd, restart-survival verified · continuity via checkpointer + SDK sessions · runaway guards · session commands · structured logging · ADRs 0005-0007 · README · 8.3/8.4 corrected.
+
+**Next session:** run `infra/graph-mail-rbac.ps1` (needs Exchange Administrator via PIM), verify the negative scoping test, then build the Graph mail connector as SDK `@tool` functions given to Megumi.

@@ -670,7 +670,7 @@ Four artifacts now describe this project. Without a rule they drift — and they
 | **GOJO-MASTER.md** (this) | Architecture, stack choices, build sequence, current position, open questions | Step-by-step commands; narrative of what happened |
 | **docs/decisions/** (ADRs) | One decision each, with the reasoning at the time — including superseded ones | Current state; anything that changes after the decision |
 | **docs/build-log.md** | What was done, when, and what broke. Chronological, append-only | Decisions (they get an ADR); architecture |
-| **VPS / build-environment doc** *(planned)* | The box, Claude Code configuration, dev tooling, agentic memory for building | Anything Gojo runs in production |
+| **[docs/VPS.md](VPS.md)** | The box, services, deploy and recovery, secrets locations, build-environment tooling | Architecture, decisions, or narrative history |
 
 **Two consequences worth stating.** A decision recorded in an ADR is not repeated here — this document links to it. And when this document and an ADR conflict, **this document wins** (see the header), because ADRs are point-in-time and this is current.
 
@@ -678,4 +678,4 @@ Four artifacts now describe this project. Without a rule they drift — and they
 
 ---
 
-**Next action:** build step 2 — the Teams surface. Check PyPI for the current `microsoft-agents-hosting-core` before pinning (§13 item 2).
+**Next action:** build step 4. Run `infra/graph-mail-rbac.ps1` — needs Exchange Administrator via PIM — and confirm the **negative** scoping test returns `InScope: False` for another mailbox. Then build the Graph mail connector as Agent SDK `@tool` functions given to Megumi. **Do not grant `Mail.Read` in Entra** (§8.4).
