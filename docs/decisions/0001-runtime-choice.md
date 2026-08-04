@@ -1,6 +1,6 @@
 # ADR 0001 — Bun as primary runtime, Node as compatibility layer
 
-**Status:** Accepted
+**Status:** Superseded by ADR 0004.
 **Date:** 2025-06-17
 
 ## Context

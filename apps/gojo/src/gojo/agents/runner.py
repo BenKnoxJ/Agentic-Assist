@@ -35,6 +35,10 @@ async def run_agent(
         system_prompt=system_prompt or None,
         allowed_tools=list(allowed_tools or []),
         max_turns=max_turns or settings.max_turns_per_agent,
+        # Agents get only the context passed in above. No CLAUDE.md, settings,
+        # or slash commands are inherited from the host Claude Code environment
+        # - not the user's, not the project's, not the local ones.
+        setting_sources=[],
     )
 
     parts: list[str] = []
