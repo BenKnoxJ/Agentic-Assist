@@ -65,6 +65,33 @@ def is_authorised(
 _in_flight: set[asyncio.Task] = set()
 
 
+async def deliver_reply(
+    adapter, agent_id: str, reference: ConversationReference, text: str
+) -> bool:
+    """Send `text` back into an existing conversation. Returns True on success.
+
+    ⚠ Pass a continuation **Activity**, not the ConversationReference itself.
+    ChannelAdapter.continue_conversation takes a reference and converts it, but
+    ChannelServiceAdapter - which CloudAdapter actually inherits from -
+    overrides the method to take an Activity. Reading the base class signature
+    is not enough; passing a reference fails deep inside the SDK's telemetry
+    with "'ConversationReference' object has no attribute 'recipient'", which
+    names neither the argument nor the method at fault.
+    """
+
+    async def _send(context: TurnContext) -> None:
+        await context.send_activity(text)
+
+    try:
+        await adapter.continue_conversation(
+            agent_id, reference.get_continuation_activity(), _send
+        )
+        return True
+    except Exception:
+        logger.exception("could not deliver proactive reply")
+        return False
+
+
 def build_agent_app(
     adapter,
     graph,
@@ -105,13 +132,7 @@ def build_agent_app(
             logger.exception("graph failed for a Teams turn")
             reply = "Something went wrong on my side. Nothing was changed."
 
-        async def _send(context: TurnContext) -> None:
-            await context.send_activity(reply)
-
-        try:
-            await adapter.continue_conversation(agent_id, reference, _send)
-        except Exception:
-            logger.exception("could not deliver proactive reply")
+        await deliver_reply(adapter, agent_id, reference, reply)
 
     @app.activity(ActivityTypes.message)
     async def on_message(context: TurnContext, state: TurnState) -> bool:

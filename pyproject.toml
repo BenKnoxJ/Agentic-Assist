@@ -2,7 +2,7 @@
 members = ["apps/*", "libs/connectors/*"]
 
 [dependency-groups]
-dev = ["pytest>=8.0", "ruff>=0.6", "jsonschema>=4.0"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "ruff>=0.6", "jsonschema>=4.0"]
 
 [tool.ruff]
 line-length = 100
@@ -16,3 +16,4 @@ known-first-party = ["gojo"]
 
 [tool.pytest.ini_options]
 testpaths = ["apps", "libs"]
+asyncio_mode = "auto"
