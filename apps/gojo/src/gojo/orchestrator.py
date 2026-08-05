@@ -186,6 +186,33 @@ async def resume_turn(graph, thread_id: str) -> dict:
         ) from exc
 
 
+# One lock per conversation, process-wide. A LangGraph thread is a
+# single-writer structure, and this registry is what makes that true in
+# practice: live turns, /chat turns, commands and recovery all take the
+# conversation's lock for their whole critical section. Grows with distinct
+# thread ids; bounded in practice by the conversations one user opens.
+# ADR 0009.
+_thread_locks: dict[str, asyncio.Lock] = {}
+
+
+def lock_for(thread_id: str) -> asyncio.Lock:
+    """The serialisation lock for one conversation (ADR 0009).
+
+    ⚠ Not re-entrant, and deliberately NOT taken inside run_turn or
+    resume_turn: recovery must hold it across a wider span (guard, resume,
+    deliver, clear), and a lock inside the turn functions would deadlock it.
+    Callers wrap their own critical sections. ADR 0009 records why this is
+    an exception to 9.3's one-surface pattern.
+    """
+    return _thread_locks.setdefault(thread_id, asyncio.Lock())
+
+
+async def run_locked(graph, message: str, thread_id: str) -> dict:
+    """run_turn under the conversation's lock - the live-path entry point."""
+    async with lock_for(thread_id):
+        return await run_turn(graph, message, thread_id)
+
+
 def build_graph(checkpointer=None):
     """Assemble and compile the orchestrator graph.
 

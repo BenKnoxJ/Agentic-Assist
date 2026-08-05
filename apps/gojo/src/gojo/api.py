@@ -26,7 +26,7 @@ from gojo.commands import handle as handle_command
 from gojo.commands import is_command
 from gojo.config import assert_subscription_auth, get_settings
 from gojo.logs import new_turn_id
-from gojo.orchestrator import GraphTimeout, build_graph, run_turn
+from gojo.orchestrator import GraphTimeout, build_graph, run_locked
 from gojo.state import Intent
 from gojo.teams import build_agent_app, in_flight_count
 
@@ -177,7 +177,9 @@ async def chat(request: ChatRequest) -> ChatResponse:
         return ChatResponse(reply=reply, intent="unknown", steps=["command"])
 
     try:
-        result = await run_turn(app.state.graph, request.message, request.thread_id)
+        # Locked like every other graph entry point (ADR 0009), so a curl
+        # session and a Teams turn on the same thread id queue, not fork.
+        result = await run_locked(app.state.graph, request.message, request.thread_id)
     except GraphTimeout as exc:
         raise HTTPException(status_code=504, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 - contained, see 10.4

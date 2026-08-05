@@ -37,7 +37,7 @@ from microsoft_agents.hosting.core import (
 from gojo.commands import handle as handle_command
 from gojo.commands import is_command
 from gojo.logs import new_turn_id
-from gojo.orchestrator import GraphTimeout, run_turn
+from gojo.orchestrator import GraphTimeout, run_locked
 
 logger = logging.getLogger(__name__)
 
@@ -158,9 +158,13 @@ def build_agent_app(
 
         thread_id is the Teams conversation id, so state and the agent's
         session follow the chat rather than the process.
+
+        run_locked, not run_turn: turns on one conversation queue rather than
+        interleave (ADR 0009) - two overlapping invocations of one thread
+        fork its checkpoint history, and the losing line's writes vanish.
         """
         try:
-            result = await run_turn(graph, message, thread_id)
+            result = await run_locked(graph, message, thread_id)
             return result["reply"]
         except GraphTimeout:
             logger.error("turn timed out on thread %s", thread_id)

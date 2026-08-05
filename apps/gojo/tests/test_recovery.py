@@ -168,3 +168,31 @@ async def test_resume_applies_the_wall_clock_guard(tmp_path, monkeypatch) -> Non
 
         with pytest.raises(orchestrator.GraphTimeout):
             await orchestrator.resume_turn(graph, "conv-a")
+
+
+async def test_overlapping_turns_serialise_instead_of_forking(tmp_path) -> None:
+    """Two messages back to back must queue, not corrupt the thread (ADR 0009)."""
+    from gojo.logs import new_turn_id
+
+    order: list[str] = []
+
+    async def tracked(message: str, resume: str | None = None, summary: str = ""):
+        order.append(f"start:{message}")
+        await asyncio.sleep(0.2)
+        order.append(f"end:{message}")
+        return AgentResult(text=f"ans:{message}", session_id=f"s:{message}")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(orchestrator, "gather", tracked)
+        async with AsyncSqliteSaver.from_conn_string(str(tmp_path / "cp.sqlite")) as cp:
+            graph = orchestrator.build_graph(checkpointer=cp)
+            new_turn_id()
+            t1 = asyncio.create_task(orchestrator.run_locked(graph, "A", "conv-a"))
+            await asyncio.sleep(0.05)
+            new_turn_id()
+            t2 = asyncio.create_task(orchestrator.run_locked(graph, "B", "conv-a"))
+            await t1
+            await t2
+
+    # A finishes entirely before B starts - no interleaving, no fork.
+    assert order == ["start:A", "end:A", "start:B", "end:B"]
