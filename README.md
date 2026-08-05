@@ -103,6 +103,7 @@ The reversals are the point: they are the evidence of judgement.
 | [0006](docs/decisions/0006-async-teams-replies.md) | Two-part replies inside the channel timeout |
 | [0007](docs/decisions/0007-persistence-before-connectors.md) | Persistence before connectors |
 | [0008](docs/decisions/0008-in-flight-turn-resumption.md) | Resume in-flight turns after a restart |
+| [0009](docs/decisions/0009-per-conversation-serialisation.md) | One graph operation per conversation at a time |
 
 Two are worth reading for what they say about verifying rather than
 assuming. **ADR 0005** records that every Agent SDK call fails

@@ -519,7 +519,7 @@ Agentic-Assist/
 ├── apps/gojo/tests/       api, commands, config, continuity, guards, teams_authorisation, teams_delivery
 ├── infra/                 gojo.service, teams-app/, graph-mail-rbac.ps1
 ├── .github/workflows/     ci.yml
-├── docs/                  GOJO-MASTER.md, build-log.md, VPS.md, decisions/ (ADRs 0001-0008)
+├── docs/                  GOJO-MASTER.md, build-log.md, VPS.md, decisions/ (ADRs 0001-0009)
 └── pyproject.toml         uv workspace root
 ```
 
@@ -684,4 +684,4 @@ Four artifacts now describe this project. Without a rule they drift — and they
 
 ---
 
-**Next action:** close the in-flight resumption gap (**ADR 0008**, plan written and reviewed) — it is small, needs no privileges, and connectors make the window it protects wider. Then build step 4. Run `infra/graph-mail-rbac.ps1` — needs Exchange Administrator via PIM — and confirm the **negative** scoping test returns `InScope: False` for another mailbox. Then build the Graph mail connector as Agent SDK `@tool` functions given to Megumi. **Do not grant `Mail.Read` in Entra** (§8.4).
+**Next action:** close the in-flight resumption gap (**ADR 0008** on **ADR 0009**'s per-conversation locks — the locks also fix a live `/new` race, so they land first; plan written, four review rounds, root cause settled) — it is small, needs no privileges, and connectors make the window it protects wider. Then build step 4. Run `infra/graph-mail-rbac.ps1` — needs Exchange Administrator via PIM — and confirm the **negative** scoping test returns `InScope: False` for another mailbox. Then build the Graph mail connector as Agent SDK `@tool` functions given to Megumi. **Do not grant `Mail.Read` in Entra** (§8.4).
