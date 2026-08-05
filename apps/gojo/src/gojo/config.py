@@ -88,6 +88,12 @@ class Settings(BaseSettings):
     # the best-evidenced failure mode of single-VPS agent systems.
     max_agent_calls_per_turn: int = 5
 
+    # How long an owed reply stays worth delivering. An answer to a question
+    # asked before a restart the user has long since forgotten is noise, not
+    # service - and 9.1 requires a ceiling at the moment a store is created,
+    # not a retention routine bolted on later. ADR 0008.
+    owed_reply_max_age_seconds: float = 21600.0  # 6 hours
+
     @property
     def allowed_users(self) -> frozenset[str]:
         """Entra object IDs permitted to use the assistant."""
