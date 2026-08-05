@@ -9,11 +9,13 @@ decisions - those belong to the orchestrator. Step 2 replaces /chat's caller
 with the Teams surface; the graph underneath does not change.
 """
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
 
+import aiosqlite
 from fastapi import FastAPI, HTTPException, Request, Response
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from microsoft_agents.hosting.fastapi import (
@@ -22,11 +24,13 @@ from microsoft_agents.hosting.fastapi import (
 )
 from pydantic import BaseModel, Field
 
+from gojo import outbox
 from gojo.commands import handle as handle_command
 from gojo.commands import is_command
 from gojo.config import assert_subscription_auth, get_settings
 from gojo.logs import new_turn_id
 from gojo.orchestrator import GraphTimeout, build_graph, run_locked
+from gojo.recovery import recover_owed_replies
 from gojo.state import Intent
 from gojo.teams import build_agent_app, in_flight_count
 
@@ -75,6 +79,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.graph = build_graph(checkpointer=checkpointer)
         logger.info("checkpointer at %s", checkpoint_file)
 
+        # A second connection to the same file. LangGraph owns its schema and
+        # we own ours; at one user's write volume there is no contention
+        # (ADR 0008).
+        outbox_conn = await stack.enter_async_context(
+            aiosqlite.connect(str(checkpoint_file))
+        )
+        await outbox.create_table(outbox_conn)
+        app.state.outbox = outbox_conn
+        app.state.recovery_task = None
+
         app.state.adapter = None
         app.state.agent_app = None
 
@@ -110,6 +124,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 settings.allowed_users,
                 settings.teams_tenant_id,
                 settings.fast_reply_seconds,
+                outbox_conn,
             )
             logger.info(
                 "Teams surface enabled for tenant %s, %d authorised user(s)",
@@ -124,7 +139,36 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         else:
             logger.warning("Teams surface disabled - client id, tenant id or secret unset")
 
-        yield
+        if app.state.agent_app is not None:
+            # Started rather than awaited: recovery must not hold the boot open
+            # for graph_timeout_seconds per owed row while systemd is watching
+            # (ADR 0008). Safe to run alongside live traffic because each row
+            # is processed under its conversation's lock (ADR 0009). Held on
+            # app.state because asyncio keeps only weak references to tasks -
+            # the trap teams.py documents.
+            app.state.recovery_task = asyncio.create_task(
+                recover_owed_replies(
+                    outbox_conn,
+                    app.state.graph,
+                    app.state.adapter,
+                    settings.teams_client_id,
+                )
+            )
+
+        try:
+            yield
+        finally:
+            # The exit stack is about to close both SQLite connections. A
+            # recovery pass still mid-resume would then run against closed
+            # handles, so it is cancelled first rather than left to find out.
+            task = app.state.recovery_task
+            if task is not None and not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+            # app is a module singleton, so a stale handle would outlive the
+            # connection it points at.
+            app.state.outbox = None
 
 
 app = FastAPI(title="Gojo", version="0.1.0", lifespan=lifespan)
@@ -136,11 +180,18 @@ async def health() -> dict[str, object]:
 
     Reports the Teams surface separately: a process that is up but not
     listening to Teams looks identical from the outside otherwise.
+
+    owed_replies is the ADR 0008 backlog - answers promised and not yet
+    delivered. Steady state is 0; a number that stays above 0 across restarts
+    means delivery is failing, not that turns are slow.
     """
+    conn = getattr(app.state, "outbox", None)
+    owed = await outbox.list_owed(conn) if conn is not None else []
     return {
         "status": "ok",
         "teams": "enabled" if app.state.agent_app else "disabled",
         "turns_in_flight": in_flight_count(),
+        "owed_replies": len(owed),
     }
 
 

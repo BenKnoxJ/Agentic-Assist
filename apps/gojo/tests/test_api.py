@@ -107,3 +107,11 @@ def test_upstream_failure_is_contained(client: TestClient) -> None:
 
     # Process still serving.
     assert client.get("/health").status_code == 200
+
+
+def test_health_reports_the_owed_reply_backlog(client: TestClient) -> None:
+    """A restart that lost work should be visible without opening the file."""
+    body = client.get("/health").json()
+
+    assert isinstance(body["owed_replies"], int)
+    assert body["owed_replies"] == 0
