@@ -9,6 +9,9 @@ dependencies = [
     "pydantic-settings",
     "langgraph>=1.0.10",
     "langgraph-checkpoint-sqlite>=3.0.1",
+    # Imported directly by gojo.outbox; do not rely on the checkpointer's
+    # transitive resolution for a first-party import (6.1, ADR 0008).
+    "aiosqlite>=0.22",
     "langchain-core>=1.2.22",
     "claude-agent-sdk>=0.2.128",
     # Teams surface. Verified against PyPI 4 Aug 2026: 1.3.0 current.

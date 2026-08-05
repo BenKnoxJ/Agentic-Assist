@@ -555,6 +555,7 @@ name = "gojo"
 version = "0.1.0"
 source = { editable = "apps/gojo" }
 dependencies = [
+    { name = "aiosqlite" },
     { name = "claude-agent-sdk" },
     { name = "fastapi" },
     { name = "langchain-core" },
@@ -570,6 +571,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiosqlite", specifier = ">=0.22" },
     { name = "claude-agent-sdk", specifier = ">=0.2.128" },
     { name = "fastapi" },
     { name = "langchain-core", specifier = ">=1.2.22" },

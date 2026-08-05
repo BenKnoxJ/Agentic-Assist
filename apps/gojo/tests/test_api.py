@@ -14,12 +14,17 @@ from gojo.config import Settings
 
 
 @pytest.fixture
-def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
+def client(monkeypatch: pytest.MonkeyPatch, tmp_path) -> TestClient:
     """A client whose gather agent is a stub and whose Teams surface is off.
 
     _env_file=None matters: without it Settings reads the developer's real
     .env, so these tests would pass or fail depending on whether Teams
     happened to be configured on the machine running them.
+
+    checkpoint_path matters for the same reason. The default is relative to
+    the working directory, so without it the suite writes to the real
+    conversation database - and VPS.md puts `uv run pytest` in the deploy
+    procedure, on the box, next to live state.
     """
 
     async def fake_gather(
@@ -32,7 +37,11 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
         )
 
     monkeypatch.setattr(orchestrator, "gather", fake_gather)
-    monkeypatch.setattr(api, "get_settings", lambda: Settings(_env_file=None))
+    monkeypatch.setattr(
+        api,
+        "get_settings",
+        lambda: Settings(_env_file=None, checkpoint_path=str(tmp_path / "cp.sqlite")),
+    )
 
     # TestClient as a context manager is what triggers lifespan, and lifespan
     # is where the graph is compiled. Without it app.state.graph is unset.
