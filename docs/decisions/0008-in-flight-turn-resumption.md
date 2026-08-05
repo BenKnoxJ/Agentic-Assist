@@ -115,6 +115,23 @@ should carry it.
   the rehydrated continuation activity has `recipient` populated.
 - A second `aiosqlite` connection to the checkpointer's file, under the real
   lifespan ordering and with a concurrent graph write, showed no contention.
+- **A guard checked only before the resume is not enough.** The resume holds
+  the thread for seconds while the app serves. Measured: `/new` landing in
+  that window had its row deleted *after* the guard had already passed, the
+  discarded answer was delivered on top of "Fresh start", and `/new`'s own
+  `aupdate_state` was silently lost — its checkpoint forked from the same
+  parent as the resume's, the resume's line won, and the resumed turn's
+  `session_id` write resurrected the session the user had just discarded.
+  Hence the pre-delivery re-check, and hence it must test row existence and
+  turn id both: `/new` deletes the row but changes no turn id; a new message
+  changes the turn id but deletes no row.
+- The rest of the mechanism was probed adversarially and held: the turn id
+  propagates correctly from the handler's contextvar through the background
+  task into the graph node, including under two interleaved turns; the stamp
+  is durably checkpointed well before the ACK and survives `kill -9`;
+  resumption after a real process restart, rehydrated from SQLite alone, does
+  not re-run `new_turn`; and repeated `ainvoke(None)` on a completed thread
+  writes no new checkpoints.
 
 ## Consequences
 - **Delivery is at-least-once, not exactly-once.** A crash between
@@ -131,11 +148,21 @@ should carry it.
   older row is abandoned with a WARNING. Rare — it needs two slow turns back to
   back — but it is a promise that will not be kept, so it is logged as one.
 - **A recovery pass holds a thread for as long as the resume takes**, up to
-  `graph_timeout_seconds`, while the app is already serving. A message arriving
-  on that thread in that window produces two concurrent invocations of it.
-  Blocking startup until recovery finished would remove this, at the cost of
-  holding the service down for up to that same timeout per owed row against
-  `Restart=always`.
+  `graph_timeout_seconds`, while the app is already serving. The guard is
+  re-checked immediately before delivery, which shrinks the exposure to
+  milliseconds but does not remove it: a message arriving mid-resume still
+  produces two concurrent invocations of one thread, and their checkpoints
+  fork — the losing line's state writes are silently discarded. That fork is
+  not unique to recovery: `/new` racing a live in-flight turn has the same
+  shape today. Recorded rather than fixed; per-thread serialisation is the
+  real cure and belongs with step 5's gate work, where pending state becomes
+  load-bearing. Blocking startup until recovery finished would remove the
+  recovery half, at the cost of holding the service down for up to
+  `graph_timeout_seconds` per owed row against `Restart=always`.
+- **The attempts ceiling counts delivery failures only.** A resume that
+  crashes the process leaves its row at `attempts=0` and is retried on every
+  boot until the age ceiling drops it. Bounded by the six-hour expiry, but the
+  ceiling does not cover the failure mode its name suggests.
 - **Recording the debt must never break the turn.** The write sits before the
   acknowledgement, so a database error there would otherwise cost the user
   their answer *and* their acknowledgement. It is wrapped: a failed write is
@@ -148,6 +175,12 @@ should carry it.
   id and service URL, inside the serialised reference. It inherits the
   checkpoint file's handling, and the expiry ceiling bounds how long it is
   kept.
+- **`/chat` can touch a Teams thread if handed its conversation id.** The
+  thread id on `/chat` is caller-chosen. A question moves the turn id and an
+  owed Teams reply is conservatively abandoned; a `/new` via `/chat` clears
+  no rows because that surface owes nothing. Both require deliberately
+  supplying a Teams conversation id to a curl endpoint on one's own box —
+  documented, not defended against.
 - **`turn_id` is 32 bits of randomness** (`logs.py` takes 8 hex characters). A
   collision with an outstanding row would silently replace it. At one user with
   a handful of concurrent owed replies this is not worth widening; it is
