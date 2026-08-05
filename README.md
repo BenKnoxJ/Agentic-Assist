@@ -101,6 +101,7 @@ The reversals are the point: they are the evidence of judgement.
 | [0005](docs/decisions/0005-event-loop-pinning.md) | Pin asyncio; uvloop breaks the Agent SDK |
 | [0006](docs/decisions/0006-async-teams-replies.md) | Two-part replies inside the channel timeout |
 | [0007](docs/decisions/0007-persistence-before-connectors.md) | Persistence before connectors |
+| [0008](docs/decisions/0008-in-flight-turn-resumption.md) | Resume in-flight turns after a restart |
 
 Two are worth reading for what they say about verifying rather than
 assuming. **ADR 0005** records that every Agent SDK call fails
@@ -158,7 +159,11 @@ figures in the journal.
 Known gaps, stated rather than hidden: agent *reasoning* is invisible in
 LangSmith because the Agent SDK runs in a subprocess, so orchestration is
 traced and thinking is not. Session replay makes a long conversation cost
-several times a short one.
+several times a short one. And a turn acknowledged but not yet answered does
+not survive a restart — the acknowledgement is sent, the reply is not. That
+one is designed and specified in **ADR 0008** and not yet built; it went
+unrecorded outside ADR 0006 for two sessions, which is itself the argument
+for the ownership rule the master document now carries.
 
 ## Running the tests
 

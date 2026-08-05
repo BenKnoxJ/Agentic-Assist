@@ -140,7 +140,7 @@ microsoft-agents-hosting-teams
 microsoft-agents-authentication-msal
 ```
 
-**⚠ Version:** earlier research reported v0.9.0 as current. **That was stale.** The SDK is past 1.0 — `microsoft-agents-hosting-core` was verified at 1.1.0 on PyPI, and later releases may exist. **Check PyPI for the actual current version before pinning.** Do not pin 0.9.0.
+**⚠ Version:** earlier research reported v0.9.0 as current. **That was stale.** The SDK is past 1.0 — the four `microsoft-agents-*` packages were verified at **1.3.0** on PyPI on 4 August 2026 and are pinned there (ADR 0006). An earlier note in this document said 1.1.0; that was two minor versions stale.
 
 ### 5.2 Why not hand-roll JWT validation
 
@@ -310,8 +310,8 @@ When it happens, split the **gather** agent by domain. The act agent almost neve
 
 | Connector | Scope at build |
 |---|---|
-| **Microsoft Graph — mail** | Read-only at step 3. Write scopes at step 5 |
-| **Jira** | Read-only at step 3 |
+| **Microsoft Graph — mail** | Read-only at step 4. Write scopes at step 5 |
+| **Jira** | Read-only at step 4 |
 
 The other nine are a **backlog**, added when a workflow you actually run needs one. Eleven connectors specified up front is the opposite of "adding more as we go."
 
@@ -475,7 +475,7 @@ Six properties, deliberately no more. This exists to stop scope creep dressed as
 | Piece | State |
 |---|---|
 | uv workspace, locked | ✅ langgraph 1.2.10, langchain-core 1.5.2, fastapi 0.141.1 — CVE floors cleared |
-| LangGraph graph | ✅ 4 nodes (`classify`, `megumi`, `sukuna`, `respond`), conditional routing proven on both paths |
+| LangGraph graph | ✅ 5 nodes (`new_turn`, `classify`, `megumi`, `sukuna`, `respond`), conditional routing proven on both paths |
 | LangSmith tracing | ✅ EU region, project `Gojo-Agent-OS`, 1 root per turn measured (§9.2) |
 | Agent SDK + subscription auth | ✅ `claude-agent-sdk 0.2.128`, guard in `config.py` rejects `ANTHROPIC_API_KEY`, covered by tests |
 | Megumi reasoning for real | ✅ Verified — coherent output, not a stub |
@@ -508,14 +508,18 @@ Agentic-Assist/
 │   ├── api.py             FastAPI app, graph compiled in lifespan
 │   ├── __main__.py        server entrypoint — pins loop="asyncio", ADR 0005
 │   ├── config.py          settings + assert_subscription_auth()
-│   ├── orchestrator.py    graph, 4 nodes, conditional routing
+│   ├── orchestrator.py    graph, 5 nodes, routing, run_turn/resume guards
 │   ├── state.py           GojoState with reducers
+│   ├── teams.py           Teams surface, authorisation, two-part reply (ADR 0006)
+│   ├── commands.py        /new, /compact, /help — never reach an agent
+│   ├── logs.py            per-turn correlation ids
 │   └── agents/
 │       ├── megumi.py      gather agent + static system prompt
 │       └── runner.py      single Agent SDK entry point (§6.3 rule 2)
-├── apps/gojo/tests/       test_api.py, test_config.py
+├── apps/gojo/tests/       api, commands, config, continuity, guards, teams_authorisation, teams_delivery
+├── infra/                 gojo.service, caddy, teams-app, graph-mail-rbac.ps1
 ├── .github/workflows/     ci.yml
-├── docs/decisions/        ADRs 0001-0005
+├── docs/                  GOJO-MASTER.md, build-log.md, VPS.md, decisions/ (ADRs 0001-0008)
 └── pyproject.toml         uv workspace root
 ```
 
@@ -598,7 +602,7 @@ Steps 2–5 produce the corpus as a side effect of use. Step 6 then builds retri
 ## 13. Open — settle by experiment, not research
 
 1. ~~**Roots-per-turn in LangSmith.**~~ **Answered 4 August 2026: one root per turn.** Measured, 8 turns / 8 roots. See §9.2.
-2. **Current Agents SDK version.** Check PyPI before pinning.
+2. ~~**Current Agents SDK version.**~~ **Answered 4 August 2026: 1.3.0**, verified against PyPI and pinned. See §5.1.
 3. **`MemoryMax` sizing.** Start 5–6 GiB, load-test.
 4. **Agent SDK cache TTL** — flagged as a documentation gap in Anthropic's own repo. Verify against response metadata.
 5. **Adaptive Cards schema version** Teams currently renders — five-minute empirical test.
@@ -680,4 +684,4 @@ Four artifacts now describe this project. Without a rule they drift — and they
 
 ---
 
-**Next action:** build step 4. Run `infra/graph-mail-rbac.ps1` — needs Exchange Administrator via PIM — and confirm the **negative** scoping test returns `InScope: False` for another mailbox. Then build the Graph mail connector as Agent SDK `@tool` functions given to Megumi. **Do not grant `Mail.Read` in Entra** (§8.4).
+**Next action:** close the in-flight resumption gap (**ADR 0008**, plan written and reviewed) — it is small, needs no privileges, and connectors make the window it protects wider. Then build step 4. Run `infra/graph-mail-rbac.ps1` — needs Exchange Administrator via PIM — and confirm the **negative** scoping test returns `InScope: False` for another mailbox. Then build the Graph mail connector as Agent SDK `@tool` functions given to Megumi. **Do not grant `Mail.Read` in Entra** (§8.4).

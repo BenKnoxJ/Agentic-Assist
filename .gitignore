@@ -27,3 +27,6 @@ checkpoints/
 
 # Build artifacts
 gojo-teams-app.zip
+
+# Execution plans — build-environment artifacts, not project documentation (GOJO-MASTER 18)
+plans/
