@@ -14,6 +14,7 @@ and the graph stores only that - never the messages themselves (6.3 rule 3,
 unbounded state growth is the named failure mode of this pattern).
 """
 
+import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
@@ -26,6 +27,8 @@ from claude_agent_sdk import (
 )
 
 from gojo.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 AgentRunner = Callable[..., "object"]
 
@@ -96,8 +99,20 @@ async def run_agent(
         # per turn would exhaust the single core this box has (3.1).
         await client.disconnect()
 
+    text = "\n".join(parts).strip()
+    if not text:
+        # An empty answer is always a defect somewhere - Teams rejects empty
+        # messages, and respond substitutes a placeholder the user then reads.
+        # The subtype is the SDK's own reason (e.g. error_max_turns), and it
+        # crosses the subprocess boundary nowhere else (9.2).
+        logger.warning(
+            "agent returned no text: subtype=%s num_turns=%s",
+            getattr(result, "subtype", None),
+            result.num_turns if result else None,
+        )
+
     return AgentResult(
-        text="\n".join(parts).strip(),
+        text=text,
         session_id=result.session_id if result else None,
         cost_usd=result.total_cost_usd if result else None,
         num_turns=result.num_turns if result else None,

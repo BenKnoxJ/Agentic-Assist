@@ -127,3 +127,26 @@ async def test_an_empty_agent_answer_never_becomes_an_empty_reply(monkeypatch) -
     result = await graph.ainvoke({"message": "hello", "steps": [], "findings": []})
 
     assert result["reply"].strip() != ""
+
+
+async def test_megumi_does_not_cap_turns_below_the_session_history(monkeypatch) -> None:
+    """max_turns=1 + resume returned empty text on every resumed session.
+
+    Measured 5 Aug 2026: the SDK's turn counter spans the resumed session's
+    history, so a cap of 1 is already exhausted when a session resumes and
+    the model never speaks. Megumi must pass the settings budget, not 1.
+    """
+    from gojo.agents import megumi
+    from gojo.agents.runner import AgentResult
+
+    seen = {}
+
+    async def fake_run_agent(prompt, system_prompt="", allowed_tools=None,
+                             max_turns=None, resume=None):
+        seen["max_turns"] = max_turns
+        return AgentResult(text="ok", session_id="s1")
+
+    monkeypatch.setattr(megumi, "run_agent", fake_run_agent)
+    await megumi.gather("hello", resume="existing-session")
+
+    assert seen["max_turns"] is None  # runner then applies the settings budget

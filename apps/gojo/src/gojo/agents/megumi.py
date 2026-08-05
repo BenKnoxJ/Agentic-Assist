@@ -37,11 +37,16 @@ async def gather(
     if summary and not resume:
         prompt = f"Context from earlier in this conversation:\n{summary}\n\n{message}"
 
+    # No max_turns override: the runner applies settings.max_turns_per_agent.
+    # ⚠ Do not put max_turns=1 back. The SDK's turn counter spans a resumed
+    # session's history (measured 5 Aug 2026), so a cap of 1 is already spent
+    # the moment a session resumes - the model never speaks, every resumed
+    # turn comes back empty, and the user sees "(no findings)". The 9.3
+    # runaway guards (wall clock, agent budget) still apply.
     return await run_agent(
         prompt=prompt,
         system_prompt=SYSTEM_PROMPT,
         allowed_tools=[],
-        max_turns=1,
         resume=resume,
     )
 
