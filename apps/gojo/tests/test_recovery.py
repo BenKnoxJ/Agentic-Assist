@@ -7,11 +7,22 @@ across that turn's own progress and changes on the next.
 
 import asyncio
 
+import aiosqlite
 import pytest
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from microsoft_agents.activity import (
+    Activity,
+    ActivityTypes,
+    ChannelAccount,
+    ConversationAccount,
+)
 
-from gojo import orchestrator
+from gojo import orchestrator, outbox
 from gojo.agents.runner import AgentResult
+from gojo.recovery import recover_owed_replies
+from gojo.teams import FAILED
+
+AGENT_ID = "2b6bad70-0000-0000-0000-000000000000"
 
 
 class CrashOnceGather:
@@ -230,3 +241,372 @@ async def test_new_during_a_turn_is_not_reverted(tmp_path) -> None:
 
     assert reply == commands.NEW_DONE
     assert state.values.get("session_id") is None
+
+
+def a_reference(conversation_id: str = "conv-a"):
+    activity = Activity(
+        type=ActivityTypes.message,
+        text="hello",
+        channel_id="msteams",
+        service_url="https://smba.trafficmanager.net/uk/",
+        from_property=ChannelAccount(id="29:user", name="Ben Knox"),
+        recipient=ChannelAccount(id="28:bot", name="Gojo"),
+        conversation=ConversationAccount(id=conversation_id, tenant_id="tenant"),
+    )
+    return activity.get_conversation_reference()
+
+
+class RecordingAdapter:
+    """Captures what was sent, by running the callback the real adapter runs."""
+
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+        self.continuations: list[object] = []
+
+    async def continue_conversation(self, agent_id, continuation, callback):
+        self.continuations.append(continuation)
+
+        class Ctx:
+            def __init__(self, sink):
+                self._sink = sink
+
+            async def send_activity(self, text):
+                self._sink.append(text)
+
+        await callback(Ctx(self.sent))
+
+
+class BrokenAdapter:
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+
+    async def continue_conversation(self, agent_id, continuation, callback):
+        raise RuntimeError("service url unreachable")
+
+
+async def owe(conn, turn_id: str, thread_id: str = "conv-a") -> None:
+    """Record a debt the way teams.py does - from the turn id, not from state.
+
+    ⚠ Deliberately does NOT read the graph. Revision 2's helper captured the
+    guard value from the graph after the crash, which made every recovery test
+    agree with whatever recovery later observed. The tests passed and the
+    mechanism was broken.
+    """
+    await outbox.create_table(conn)
+    await outbox.record(conn, turn_id, thread_id, a_reference(thread_id).model_dump_json())
+
+
+async def test_a_crashed_turn_is_resumed_and_delivered(tmp_path, crashing) -> None:
+    """The whole point of ADR 0008, end to end."""
+    from gojo.logs import new_turn_id
+
+    db = str(tmp_path / "cp.sqlite")
+    adapter = RecordingAdapter()
+
+    async with AsyncSqliteSaver.from_conn_string(db) as cp:
+        graph = orchestrator.build_graph(checkpointer=cp)
+        turn = new_turn_id()
+        await crash_a_turn(graph)
+
+        async with aiosqlite.connect(db) as conn:
+            await owe(conn, turn)
+
+            assert await recover_owed_replies(conn, graph, adapter, AGENT_ID) == 1
+            assert adapter.sent == ["answer to OLD"]
+            assert await outbox.list_owed(conn) == []
+
+
+async def test_a_completed_turn_is_still_delivered(tmp_path) -> None:
+    """Revision 2's critical bug, as a regression test.
+
+    The crash lands *after* the graph finished. A checkpoint-based guard sees
+    a moved pin here and abandons the reply; a turn-id guard delivers it.
+    """
+    from gojo.logs import new_turn_id
+
+    async def ok(message: str, resume: str | None = None, summary: str = ""):
+        return AgentResult(text="the answer", session_id="s1")
+
+    db = str(tmp_path / "cp.sqlite")
+    adapter = RecordingAdapter()
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(orchestrator, "gather", ok)
+        async with AsyncSqliteSaver.from_conn_string(db) as cp:
+            graph = orchestrator.build_graph(checkpointer=cp)
+            turn = new_turn_id()
+            await graph.ainvoke(
+                {"message": "Q", "steps": [], "findings": []},
+                {"configurable": {"thread_id": "conv-a"}},
+            )
+
+            async with aiosqlite.connect(db) as conn:
+                await owe(conn, turn)
+
+                assert await recover_owed_replies(conn, graph, adapter, AGENT_ID) == 1
+                assert adapter.sent == ["the answer"]
+
+
+async def test_a_moved_on_thread_is_abandoned_not_delivered_twice(
+    tmp_path, crashing
+) -> None:
+    """Unguarded, ainvoke(None) returns the NEW turn's state and it is sent."""
+    from gojo.logs import new_turn_id
+
+    db = str(tmp_path / "cp.sqlite")
+    adapter = RecordingAdapter()
+
+    async with AsyncSqliteSaver.from_conn_string(db) as cp:
+        graph = orchestrator.build_graph(checkpointer=cp)
+        turn = new_turn_id()
+        await crash_a_turn(graph)
+
+        async with aiosqlite.connect(db) as conn:
+            await owe(conn, turn)
+
+            new_turn_id()
+            await graph.ainvoke(
+                {"message": "NEW", "steps": [], "findings": []},
+                {"configurable": {"thread_id": "conv-a"}},
+            )
+
+            assert await recover_owed_replies(conn, graph, adapter, AGENT_ID) == 0
+            assert adapter.sent == []
+            assert await outbox.list_owed(conn) == []
+
+
+async def test_new_during_recovery_waits_for_the_lock(tmp_path, crashing) -> None:
+    """/new issued while recovery holds the thread queues behind it (ADR 0009).
+
+    The delivered answer arrives first, then the conversation is forgotten
+    and its rows are gone. Revision 4 tried to solve this window with a
+    pre-delivery re-check; the lock removes the window instead.
+    """
+    from gojo import commands
+    from gojo.logs import new_turn_id
+
+    db = str(tmp_path / "cp.sqlite")
+    adapter = RecordingAdapter()
+
+    async with AsyncSqliteSaver.from_conn_string(db) as cp:
+        graph = orchestrator.build_graph(checkpointer=cp)
+        turn = new_turn_id()
+        await crash_a_turn(graph)
+
+        async with aiosqlite.connect(db) as conn:
+            await owe(conn, turn)
+
+            recovery = asyncio.create_task(
+                recover_owed_replies(conn, graph, adapter, AGENT_ID)
+            )
+            await asyncio.sleep(0.05)
+            # /new lands while recovery is mid-resume. It must wait.
+            new_cmd = asyncio.create_task(
+                commands.handle(graph, "/new", "conv-a", conn)
+            )
+
+            assert await recovery == 1
+            await new_cmd
+
+            assert adapter.sent == ["answer to OLD"]
+            assert await outbox.list_owed(conn) == []
+
+
+async def test_one_bad_row_does_not_stop_the_others(tmp_path, crashing) -> None:
+    """Otherwise a single corrupt row blocks recovery on every future boot."""
+    from gojo.logs import new_turn_id
+
+    db = str(tmp_path / "cp.sqlite")
+    adapter = RecordingAdapter()
+
+    async with AsyncSqliteSaver.from_conn_string(db) as cp:
+        graph = orchestrator.build_graph(checkpointer=cp)
+        turn = new_turn_id()
+        await crash_a_turn(graph)
+
+        async with aiosqlite.connect(db) as conn:
+            await outbox.create_table(conn)
+            # Sorts first, and its reference will not deserialise.
+            await outbox.record(conn, "aaa-bad", "conv-a", "not json at all")
+            await owe(conn, turn)
+
+            delivered = await recover_owed_replies(conn, graph, adapter, AGENT_ID)
+
+            assert delivered == 1
+            assert adapter.sent == ["answer to OLD"]
+            assert await outbox.list_owed(conn) == []
+
+
+async def test_a_stale_reply_is_abandoned(tmp_path, crashing, monkeypatch) -> None:
+    """An answer to a question asked hours ago is noise, not service."""
+    import gojo.recovery as recovery_module
+    from gojo.config import Settings
+    from gojo.logs import new_turn_id
+
+    monkeypatch.setattr(
+        recovery_module,
+        "get_settings",
+        lambda: Settings(_env_file=None, owed_reply_max_age_seconds=0.0),
+    )
+
+    db = str(tmp_path / "cp.sqlite")
+    adapter = RecordingAdapter()
+
+    async with AsyncSqliteSaver.from_conn_string(db) as cp:
+        graph = orchestrator.build_graph(checkpointer=cp)
+        turn = new_turn_id()
+        await crash_a_turn(graph)
+
+        async with aiosqlite.connect(db) as conn:
+            await owe(conn, turn)
+
+            assert await recover_owed_replies(conn, graph, adapter, AGENT_ID) == 0
+            assert adapter.sent == []
+            assert await outbox.list_owed(conn) == []
+
+
+async def test_nothing_owed_delivers_nothing(tmp_path) -> None:
+    adapter = RecordingAdapter()
+
+    async with aiosqlite.connect(str(tmp_path / "cp.sqlite")) as conn:
+        await outbox.create_table(conn)
+
+        assert await recover_owed_replies(conn, None, adapter, AGENT_ID) == 0
+        assert adapter.sent == []
+
+
+async def test_failed_delivery_is_retried_on_a_later_pass(tmp_path, crashing) -> None:
+    """Two passes, because one pass proves nothing about retry."""
+    from gojo.logs import new_turn_id
+
+    db = str(tmp_path / "cp.sqlite")
+
+    async with AsyncSqliteSaver.from_conn_string(db) as cp:
+        graph = orchestrator.build_graph(checkpointer=cp)
+        turn = new_turn_id()
+        await crash_a_turn(graph)
+
+        async with aiosqlite.connect(db) as conn:
+            await owe(conn, turn)
+
+            assert await recover_owed_replies(conn, graph, BrokenAdapter(), AGENT_ID) == 0
+            assert (await outbox.list_owed(conn))[0].attempts == 1
+
+            working = RecordingAdapter()
+            assert await recover_owed_replies(conn, graph, working, AGENT_ID) == 1
+            assert working.sent == ["answer to OLD"]
+            assert await outbox.list_owed(conn) == []
+
+
+async def test_an_exhausted_reply_is_abandoned(tmp_path, crashing) -> None:
+    from gojo.logs import new_turn_id
+
+    db = str(tmp_path / "cp.sqlite")
+    adapter = RecordingAdapter()
+
+    async with AsyncSqliteSaver.from_conn_string(db) as cp:
+        graph = orchestrator.build_graph(checkpointer=cp)
+        turn = new_turn_id()
+        await crash_a_turn(graph)
+
+        async with aiosqlite.connect(db) as conn:
+            await owe(conn, turn)
+            for _ in range(outbox.MAX_ATTEMPTS):
+                await outbox.bump_attempts(conn, turn)
+
+            assert await recover_owed_replies(conn, graph, adapter, AGENT_ID) == 0
+            assert await outbox.list_owed(conn) == []
+            assert adapter.sent == []
+
+
+async def test_a_turn_that_cannot_resume_still_gets_an_answer(
+    tmp_path, crashing
+) -> None:
+    """The promise was a reply, not a correct one (ADR 0008)."""
+    from gojo.logs import new_turn_id
+
+    db = str(tmp_path / "cp.sqlite")
+    adapter = RecordingAdapter()
+
+    class ExplodingGraph:
+        def __init__(self, real):
+            self._real = real
+
+        async def aget_state(self, config):
+            return await self._real.aget_state(config)
+
+        async def ainvoke(self, _input, _config):
+            raise RuntimeError("checkpoint unreadable")
+
+    async with AsyncSqliteSaver.from_conn_string(db) as cp:
+        graph = orchestrator.build_graph(checkpointer=cp)
+        turn = new_turn_id()
+        await crash_a_turn(graph)
+
+        async with aiosqlite.connect(db) as conn:
+            await owe(conn, turn)
+
+            assert (
+                await recover_owed_replies(conn, ExplodingGraph(graph), adapter, AGENT_ID)
+                == 1
+            )
+            assert adapter.sent == [FAILED]
+            assert await outbox.list_owed(conn) == []
+
+
+async def test_recovery_delivers_an_activity_not_a_reference(
+    tmp_path, crashing
+) -> None:
+    """Regression cover for the bug test_teams_delivery.py documents."""
+    from microsoft_agents.activity import ConversationReference
+
+    from gojo.logs import new_turn_id
+
+    db = str(tmp_path / "cp.sqlite")
+    adapter = RecordingAdapter()
+
+    async with AsyncSqliteSaver.from_conn_string(db) as cp:
+        graph = orchestrator.build_graph(checkpointer=cp)
+        turn = new_turn_id()
+        await crash_a_turn(graph)
+
+        async with aiosqlite.connect(db) as conn:
+            await owe(conn, turn)
+            await recover_owed_replies(conn, graph, adapter, AGENT_ID)
+
+    assert isinstance(adapter.continuations[0], Activity)
+    assert not isinstance(adapter.continuations[0], ConversationReference)
+
+
+async def test_recovery_restores_the_original_turn_id(tmp_path, crashing) -> None:
+    """`grep turn=<id>` must span the crash and the recovery."""
+    from gojo.logs import new_turn_id
+    from gojo.logs import turn_id as turn_id_var
+
+    db = str(tmp_path / "cp.sqlite")
+    seen: list[str] = []
+
+    class Watcher(RecordingAdapter):
+        async def continue_conversation(self, agent_id, continuation, callback):
+            seen.append(turn_id_var.get())
+            await super().continue_conversation(agent_id, continuation, callback)
+
+    async with AsyncSqliteSaver.from_conn_string(db) as cp:
+        graph = orchestrator.build_graph(checkpointer=cp)
+        turn = new_turn_id()
+        await crash_a_turn(graph)
+
+        async with aiosqlite.connect(db) as conn:
+            await owe(conn, turn)
+            await recover_owed_replies(conn, graph, Watcher(), AGENT_ID)
+
+    assert seen == [turn]
+
+
+async def test_recovery_never_raises_on_a_broken_table(tmp_path) -> None:
+    """It runs unattended at boot in a task nothing awaits (10.4)."""
+    adapter = RecordingAdapter()
+
+    async with aiosqlite.connect(str(tmp_path / "cp.sqlite")) as conn:
+        # No create_table: every query against it fails.
+        assert await recover_owed_replies(conn, None, adapter, AGENT_ID) == 0
