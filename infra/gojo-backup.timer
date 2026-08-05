@@ -1,0 +1,11 @@
+# Fires gojo-backup.service daily. Persistent=true runs a missed backup at
+# the next boot rather than skipping the day - this box does reboot.
+[Unit]
+Description=Daily Gojo checkpoint backup
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

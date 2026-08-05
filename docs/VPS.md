@@ -97,12 +97,19 @@ rotates, update `.env` and restart — nothing else changes.
 
 | Path | Contents | Backed up? |
 |---|---|---|
-| `checkpoints/gojo.sqlite` | Conversation state, one thread per Teams chat, plus the `owed_replies` outbox (ADR 0008 — rows carry sender name, Entra object id and tenant id inside the serialised reference) | Not yet |
+| `checkpoints/gojo.sqlite` | Conversation state, one thread per Teams chat, plus the `owed_replies` outbox (ADR 0008 — rows carry sender name, Entra object id and tenant id inside the serialised reference) | ✅ Daily 03:00, `gojo-backup.timer` |
 | `.env` | Secrets | Not yet — recreate from the portal |
 
 Both are gitignored. Losing the checkpoint file loses conversation history
 and any not-yet-delivered answers,
 not the application.
+
+**Backups:** `gojo-backup.timer` runs `infra/backup-checkpoints.py` daily at
+03:00 (`Persistent=true`, so a missed run fires at next boot). It takes an
+online SQLite snapshot — never `cp`, which mid-write produces a corrupt copy
+that looks fine — integrity-checks it, and keeps the newest 14 in
+`~/backups/gojo/`. ⚠ Same disk as the live file: this protects against
+corruption and accidental deletion, not against losing the VPS.
 
 ## Recovery
 

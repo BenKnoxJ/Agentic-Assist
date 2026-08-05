@@ -498,9 +498,10 @@ Six properties, deliberately no more. This exists to stop scope creep dressed as
 
 **Carried debt from step 3: cleared.** All five items closed on 4 August 2026 — explicit `recursion_limit` plus a state budget field, a wall-clock timeout on graph invocation, structured logging with per-turn ids, the README, and `runner.py` on `ClaudeSDKClient`. Covered by `test_guards.py`.
 
-**Open — carry into step 4:**
-
-1. **`checkpoints/gojo.sqlite` is not backed up** ([VPS.md](VPS.md) records it as such). Losing it now loses conversation history *and* any undelivered answers, not the application
+**Open — carry into step 4:** none. The last item — backing up
+`checkpoints/gojo.sqlite` — closed 5 Aug 2026: daily online snapshot with
+integrity check and 14-copy rotation ([VPS.md](VPS.md) has the mechanism and
+its honest limitation).
 
 **Repo layout as built:**
 
