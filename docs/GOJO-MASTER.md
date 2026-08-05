@@ -1,7 +1,7 @@
 # Gojo — Master Document
 
-**Version:** 3.3 — build in progress
-**Date:** 4 August 2026
+**Version:** 3.4 — build in progress
+**Date:** 5 August 2026
 **Owner:** Ben Knox (GitHub: `BenKnoxJ`)
 **Repo:** `BenKnoxJ/Agentic-Assist` (private monorepo)
 **Package:** `gojo` (repo carries the portfolio-facing name; the Python package stays `gojo`)
@@ -13,6 +13,8 @@
 > **What changed in v3.2:** memory promoted from a folder of markdown to a **three-layer architecture** (§9.1), and retrieval moved from *deferred* to **committed and sequenced as build step 6** (§12) — Postgres 17 + pgvector + Voyage. §13 item 1 answered by measurement. §18 added to stop document drift.
 >
 > **What changed in v3.3:** **build step 2 is complete** — Gojo answers from Teams on a phone, behind JWT validation and a single-user allow-list. **Steps 3 and 4 are swapped** (ADR 0007): persistence, sessions and systemd now come before connectors, because using the system showed continuity and surviving a restart matter before tenant-wide mail permissions do.
+>
+> **What changed in v3.4:** **build step 3 is complete** — persistence, systemd and session controls. §11.0 corrected: it had drifted in five places, marking the README and the step-3 debt list as outstanding when both were closed, and still describing step 3 as in progress. One genuinely open gap is recorded for the first time — an acknowledged Teams turn is still lost on restart (**ADR 0008**), which until now existed only as a consequence line inside ADR 0006.
 
 ---
 
@@ -468,7 +470,7 @@ Six properties, deliberately no more. This exists to stop scope creep dressed as
 
 **At step 5 you have a complete, production-grade system you use every day.** Then you use it for a fortnight and let real gaps drive what comes next. **Step 6 is committed, not speculative** — but it is deliberately last, because it needs a corpus that steps 2–5 produce. See §12.
 
-### 11.0 Current position — step 2 complete, step 3 in progress
+### 11.0 Current position — steps 1–3 complete, step 4 next
 
 | Piece | State |
 |---|---|
@@ -486,17 +488,17 @@ Six properties, deliberately no more. This exists to stop scope creep dressed as
 | Runaway guards | ✅ 180s wall clock, explicit `recursion_limit`, 5 agent calls/turn with a graceful exit (9.3's "use both") |
 | `/new`, `/compact`, `/help` | ✅ Verified live: compacted a conversation, carried the summary into a fresh session, answered from it |
 | Structured logging | ✅ One turn id per turn, propagated through the graph and into the SDK's own logger. `grep turn=<id>` isolates a turn |
-| **README** | ❌ Still one line — the last outstanding debt (§16) |
+| **README** | ✅ Problem, architecture, decisions and honest gaps (§16) |
+| In-flight turn resumption | ❌ An acknowledged turn is still lost on restart — ADR 0008 |
 
 **Outstanding debt from v3.1: cleared.** ADR 0004 written, this document moved to `docs/`, `build-log.md` current to 4 August, `setting_sources=[]` applied.
 
-**Carried debt — clear during step 3:**
+**Carried debt from step 3: cleared.** All five items closed on 4 August 2026 — explicit `recursion_limit` plus a state budget field, a wall-clock timeout on graph invocation, structured logging with per-turn ids, the README, and `runner.py` on `ClaudeSDKClient`. Covered by `test_guards.py`.
 
-1. **No runaway-loop guard.** §9.3 mandates *both* an explicit `recursion_limit` and a state budget field. Neither exists; LangGraph's default 25 applies implicitly. §9.3 ranks runaway loops the best-evidenced failure mode, and connectors at step 4 are what make loops expensive
-2. **No timeout on graph invocation.** A hung Agent SDK subprocess hangs the request indefinitely
-3. ~~`print()` not structured logging~~ — **done 4 Aug 2026.** Turn ids via contextvars, key=value format
-4. **README is one line.** §16 names it the first thing a portfolio reader sees
-5. ~~`runner.py` uses `query()`, not `ClaudeSDKClient`~~ — **done 4 Aug 2026.** Sessions depend on it (ADR 0007)
+**Open — carry into step 4:**
+
+1. **An acknowledged turn does not survive a restart.** ADR 0006 accepted this at step 2 and deferred the fix to the checkpointer; step 3 built the checkpointer and did not close the gap, and ADR 0007 had listed it among the gaps the swap addressed. Design in **ADR 0008**. Connectors make turns slower, which widens exactly the window this protects
+2. **`checkpoints/gojo.sqlite` is not backed up** ([VPS.md](VPS.md) records it as such). Losing it loses conversation history, not the application
 
 **Repo layout as built:**
 
