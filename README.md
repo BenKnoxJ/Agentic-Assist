@@ -38,6 +38,7 @@ Teams message
 Azure Bot Service  ──POST──▶  FastAPI /api/messages   (JWT validated, single tenant)
                                      ↓
                         LangGraph orchestrator         ← state machine, not an agent
+                          ├── new_turn (clears per-turn state)
                           ├── classify (deterministic)
                           ├── Megumi — gather agent    ← read-only
                           ├── Sukuna — act agent       ← gated, writes only
@@ -161,9 +162,10 @@ LangSmith because the Agent SDK runs in a subprocess, so orchestration is
 traced and thinking is not. Session replay makes a long conversation cost
 several times a short one. And a turn acknowledged but not yet answered does
 not survive a restart — the acknowledgement is sent, the reply is not. That
-one is designed and specified in **ADR 0008** and not yet built; it went
-unrecorded outside ADR 0006 for two sessions, which is itself the argument
-for the ownership rule the master document now carries.
+one is designed and specified in **ADR 0008** and not yet built. It sat in
+two ADRs' prose for two sessions without ever reaching the master document's
+list of open work, which is itself the argument for the ownership rule that
+document now carries.
 
 ## Running the tests
 

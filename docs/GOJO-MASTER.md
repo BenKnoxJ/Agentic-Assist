@@ -14,7 +14,7 @@
 >
 > **What changed in v3.3:** **build step 2 is complete** — Gojo answers from Teams on a phone, behind JWT validation and a single-user allow-list. **Steps 3 and 4 are swapped** (ADR 0007): persistence, sessions and systemd now come before connectors, because using the system showed continuity and surviving a restart matter before tenant-wide mail permissions do.
 >
-> **What changed in v3.4:** **build step 3 is complete** — persistence, systemd and session controls. §11.0 corrected: it had drifted in five places, marking the README and the step-3 debt list as outstanding when both were closed, and still describing step 3 as in progress. One genuinely open gap is recorded for the first time — an acknowledged Teams turn is still lost on restart (**ADR 0008**), which until now existed only as a consequence line inside ADR 0006.
+> **What changed in v3.4:** **build step 3 is complete** — persistence, systemd and session controls. §11.0 corrected: it had drifted in five places, marking the README and the step-3 debt list as outstanding when both were closed, and still describing step 3 as in progress. One genuinely open gap now appears in this document for the first time — an acknowledged Teams turn is still lost on restart (**ADR 0008**). It was recorded in ADR 0006's consequences and again in ADR 0007's context, but never anywhere this document tracks open work, which is why it went unactioned across two sessions.
 
 ---
 
@@ -146,7 +146,7 @@ microsoft-agents-authentication-msal
 
 You *could* write the endpoint directly against the protocol — it's authenticated JSON over HTTPS. Don't. The SDK's middleware does it correctly, and hand-rolled validators routinely skip `iss` and `aud` checks, which is the difference between validating a token and validating *the right* token.
 
-**Single-tenant configuration** is the most common failure point: set `MicrosoftAppType: SingleTenant` **and** `MicrosoftAppTenantId` explicitly.
+**Single-tenant configuration** is the most common failure point. ⚠ The keys are **not** Bot Framework v4's `MicrosoftAppType` / `MicrosoftAppTenantId` — the Agents SDK reads `CLIENTID` / `TENANTID` / `CLIENTSECRET`, and builds its accepted token issuers from `TENANTID`. Setting the tenant is what makes validation single-tenant. Measured 4 August 2026, ADR 0006.
 
 ## 6. Orchestration and execution
 
@@ -323,7 +323,7 @@ The other nine are a **backlog**, added when a workflow you actually run needs o
 
 **Note:** in app-only mode `/me/messages` is invalid. Use `GET /users/{ownerUPN}/messages`.
 
-**Scope staging — do not grant everything at step 3:**
+**Scope staging — do not grant everything at step 4:**
 
 | Build step | Scopes |
 |---|---|
@@ -508,7 +508,7 @@ Agentic-Assist/
 │   ├── api.py             FastAPI app, graph compiled in lifespan
 │   ├── __main__.py        server entrypoint — pins loop="asyncio", ADR 0005
 │   ├── config.py          settings + assert_subscription_auth()
-│   ├── orchestrator.py    graph, 5 nodes, routing, run_turn/resume guards
+│   ├── orchestrator.py    graph, 5 nodes, routing, run_turn guards
 │   ├── state.py           GojoState with reducers
 │   ├── teams.py           Teams surface, authorisation, two-part reply (ADR 0006)
 │   ├── commands.py        /new, /compact, /help — never reach an agent
@@ -517,7 +517,7 @@ Agentic-Assist/
 │       ├── megumi.py      gather agent + static system prompt
 │       └── runner.py      single Agent SDK entry point (§6.3 rule 2)
 ├── apps/gojo/tests/       api, commands, config, continuity, guards, teams_authorisation, teams_delivery
-├── infra/                 gojo.service, caddy, teams-app, graph-mail-rbac.ps1
+├── infra/                 gojo.service, teams-app/, graph-mail-rbac.ps1
 ├── .github/workflows/     ci.yml
 ├── docs/                  GOJO-MASTER.md, build-log.md, VPS.md, decisions/ (ADRs 0001-0008)
 └── pyproject.toml         uv workspace root

@@ -28,5 +28,6 @@ checkpoints/
 # Build artifacts
 gojo-teams-app.zip
 
-# Execution plans — build-environment artifacts, not project documentation (GOJO-MASTER 18)
+# Execution plans — how work will be done, not what is true of the system.
+# Deleted once executed; evidence they produce belongs in an ADR or the build log.
 plans/
