@@ -171,7 +171,8 @@ async def chat(request: ChatRequest) -> ChatResponse:
     """Run one message through the orchestrator and return the reply."""
     new_turn_id()
     # Same command handling as Teams, so behaviour can be exercised from curl
-    # rather than only from a phone.
+    # rather than only from a phone. No outbox connection on purpose: /chat
+    # never acknowledges, so it never owes (ADR 0008).
     if is_command(request.message):
         reply = await handle_command(app.state.graph, request.message, request.thread_id)
         return ChatResponse(reply=reply, intent="unknown", steps=["command"])

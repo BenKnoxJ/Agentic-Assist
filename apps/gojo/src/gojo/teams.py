@@ -255,7 +255,9 @@ def build_agent_app(
         # Commands are answered on this turn and never reach an agent. They
         # are fast, so there is no acknowledgement and no proactive delivery.
         if is_command(message):
-            await context.send_activity(await handle_command(graph, message, thread_id))
+            await context.send_activity(
+                await handle_command(graph, message, thread_id, outbox_conn)
+            )
             return True
 
         # Captured before returning: once this turn ends the context is gone,

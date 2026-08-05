@@ -10,7 +10,9 @@ with no adapter, no Teams, and no subprocess.
 
 import logging
 
+from gojo import outbox
 from gojo.agents.megumi import SUMMARISE, gather
+from gojo.orchestrator import lock_for
 
 logger = logging.getLogger(__name__)
 
@@ -35,29 +37,50 @@ def _config(thread_id: str) -> dict:
     return {"configurable": {"thread_id": thread_id}}
 
 
-async def handle(graph, text: str, thread_id: str) -> str:
+async def handle(graph, text: str, thread_id: str, outbox_conn=None) -> str:
     """Run a command and return what to say back.
 
     Unknown commands get the help text rather than being passed to an agent:
     a typo'd command should not silently become a prompt.
+
+    outbox_conn is optional because /chat and the tests have no outbox. Only
+    /new uses it.
+
+    The whole command runs under the conversation's lock (ADR 0009): a /new
+    that races an in-flight turn would otherwise be silently reverted by the
+    turn's final state writes - measured on the live system, not
+    hypothetical. Under the lock the ordering is defined: answer, then
+    forget, and forget sticks.
     """
     command = text.strip().split()[0].lower()
 
-    if command == "/new":
-        return await _new(graph, thread_id)
-    if command == "/compact":
-        return await _compact(graph, thread_id)
+    async with lock_for(thread_id):
+        if command == "/new":
+            return await _new(graph, thread_id, outbox_conn)
+        if command == "/compact":
+            return await _compact(graph, thread_id)
     return HELP
 
 
-async def _new(graph, thread_id: str) -> str:
-    """Drop the session and any carried summary.
+async def _new(graph, thread_id: str, outbox_conn=None) -> str:
+    """Drop the session, any carried summary, and any answer still owed.
 
     The checkpoint history is left alone - clearing the pointers is what
     makes the next turn start fresh, and keeping the history means a
     mistaken /new is still recoverable from the checkpointer.
+
+    Owed replies are not left alone. A turn id survives aupdate_state, so
+    recovery's guard cannot tell that this conversation was discarded;
+    without this, /new is followed by an answer to the question it discarded
+    (ADR 0008).
     """
     await graph.aupdate_state(_config(thread_id), {"session_id": None, "summary": ""})
+    if outbox_conn is not None:
+        dropped = await outbox.clear_thread(outbox_conn, thread_id)
+        if dropped:
+            logger.info(
+                "/new dropped %d owed repl(ies) on thread %s", dropped, thread_id
+            )
     logger.info("/new on thread %s", thread_id)
     return NEW_DONE
 

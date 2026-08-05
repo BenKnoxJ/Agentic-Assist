@@ -137,34 +137,35 @@ async def test_resume_does_not_replay_a_completed_turn(tmp_path, crashing) -> No
     assert crashing.calls == calls
 
 
-async def test_resume_applies_the_wall_clock_guard(tmp_path, monkeypatch) -> None:
+async def test_resume_applies_the_wall_clock_guard(
+    tmp_path, crashing, monkeypatch
+) -> None:
     """9.3's timeout must cover the recovery path, not just live turns.
 
-    Patches orchestrator.get_settings the way test_guards.py does, rather than
-    mutating the lru_cached singleton built from the developer's real .env.
+    Deterministic shape: the crash leaves a pending thread with checkpoints
+    on disk, then the resume runs against an agent that hangs. (An earlier
+    version cancelled a live task instead, which raced the first checkpoint
+    write and flaked with EmptyInputError when the cancel won.)
+
+    Patches orchestrator.get_settings the way test_guards.py does, rather
+    than mutating the lru_cached singleton built from the developer's real
+    .env.
     """
     from gojo.config import Settings
 
     async def hangs(message: str, resume: str | None = None, summary: str = ""):
         await asyncio.sleep(60)
 
-    monkeypatch.setattr(orchestrator, "gather", hangs)
-    monkeypatch.setattr(
-        orchestrator,
-        "get_settings",
-        lambda: Settings(_env_file=None, graph_timeout_seconds=0.2),
-    )
-
     async with AsyncSqliteSaver.from_conn_string(str(tmp_path / "cp.sqlite")) as cp:
         graph = orchestrator.build_graph(checkpointer=cp)
-        config = {"configurable": {"thread_id": "conv-a"}}
-        task = asyncio.create_task(
-            graph.ainvoke({"message": "q", "steps": [], "findings": []}, config)
+        await crash_a_turn(graph)
+
+        monkeypatch.setattr(orchestrator, "gather", hangs)
+        monkeypatch.setattr(
+            orchestrator,
+            "get_settings",
+            lambda: Settings(_env_file=None, graph_timeout_seconds=0.2),
         )
-        await asyncio.sleep(0.05)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
 
         with pytest.raises(orchestrator.GraphTimeout):
             await orchestrator.resume_turn(graph, "conv-a")
@@ -196,3 +197,36 @@ async def test_overlapping_turns_serialise_instead_of_forking(tmp_path) -> None:
 
     # A finishes entirely before B starts - no interleaving, no fork.
     assert order == ["start:A", "end:A", "start:B", "end:B"]
+
+
+async def test_new_during_a_turn_is_not_reverted(tmp_path) -> None:
+    """The live bug that motivated ADR 0009: without serialisation, the
+    in-flight turn's final writes land after /new's aupdate_state and
+    silently resurrect the session the user discarded. Under the lock, /new
+    waits - answer first, then forget, and forget sticks.
+    """
+    from gojo import commands
+    from gojo.logs import new_turn_id
+
+    async def slow(message: str, resume: str | None = None, summary: str = ""):
+        await asyncio.sleep(0.3)
+        return AgentResult(text="the answer", session_id="s-live")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(orchestrator, "gather", slow)
+        async with AsyncSqliteSaver.from_conn_string(str(tmp_path / "cp.sqlite")) as cp:
+            graph = orchestrator.build_graph(checkpointer=cp)
+            new_turn_id()
+            task = asyncio.create_task(
+                orchestrator.run_locked(graph, "hello", "conv-a")
+            )
+            await asyncio.sleep(0.1)
+
+            reply = await commands.handle(graph, "/new", "conv-a")
+            await task
+            state = await graph.aget_state(
+                {"configurable": {"thread_id": "conv-a"}}
+            )
+
+    assert reply == commands.NEW_DONE
+    assert state.values.get("session_id") is None

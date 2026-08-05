@@ -123,3 +123,37 @@ async def test_new_on_one_thread_does_not_affect_another(tmp_path, gather) -> No
 
     # conv-b resumed normally despite /new on conv-a.
     assert gather[2]["resume"] == "session-2"
+
+
+async def test_new_clears_the_conversations_owed_replies(tmp_path) -> None:
+    """A discarded conversation must not be answered afterwards.
+
+    The recovery guard matches turn ids, and aupdate_state does not change
+    one - so /new has to say so explicitly (ADR 0008).
+    """
+    import aiosqlite
+
+    from gojo import outbox
+
+    class FakeGraph:
+        async def aupdate_state(self, config, values):
+            return None
+
+    async with aiosqlite.connect(str(tmp_path / "cp.sqlite")) as conn:
+        await outbox.create_table(conn)
+        await outbox.record(conn, "turn1", "conv-a", "{}")
+        await outbox.record(conn, "turn2", "conv-b", "{}")
+
+        await commands.handle(FakeGraph(), "/new", "conv-a", conn)
+
+        assert [r.turn_id for r in await outbox.list_owed(conn)] == ["turn2"]
+
+
+async def test_new_without_an_outbox_still_works() -> None:
+    """/chat passes no connection."""
+
+    class FakeGraph:
+        async def aupdate_state(self, config, values):
+            return None
+
+    assert await commands.handle(FakeGraph(), "/new", "conv-a") == NEW_DONE
