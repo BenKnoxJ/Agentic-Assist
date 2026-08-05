@@ -108,3 +108,22 @@ async def test_recursion_limit_is_passed_explicitly(
 
     assert seen["recursion_limit"] == 7
     assert seen["configurable"]["thread_id"] == "conv-a"
+
+
+async def test_an_empty_agent_answer_never_becomes_an_empty_reply(monkeypatch) -> None:
+    """Teams rejects an empty message with 400 BadSyntax, and the SDK surfaces
+    that into the chat as 'Exception caught'. Found live on 5 Aug 2026 when a
+    split message made megumi return empty text ("" is falsy but [""] is not).
+    """
+    from gojo import orchestrator
+    from gojo.agents.runner import AgentResult
+
+    async def empty_gather(message: str, resume: str | None = None, summary: str = ""):
+        return AgentResult(text="", session_id="s1")
+
+    monkeypatch.setattr(orchestrator, "gather", empty_gather)
+    graph = orchestrator.build_graph()
+
+    result = await graph.ainvoke({"message": "hello", "steps": [], "findings": []})
+
+    assert result["reply"].strip() != ""

@@ -206,7 +206,8 @@ def build_agent_app(
         """
         try:
             result = await run_locked(graph, message, thread_id)
-            return result["reply"]
+            # Belt to respond's braces: an empty message 400s at the channel.
+            return result["reply"] or FAILED
         except GraphTimeout:
             logger.error("turn timed out on thread %s", thread_id)
             return (

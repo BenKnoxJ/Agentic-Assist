@@ -98,10 +98,17 @@ def sukuna(state: GojoState) -> dict:
 
 
 def respond(state: GojoState) -> dict:
-    """Format the reply. A node, not an agent - one call, no tools."""
+    """Format the reply. A node, not an agent - one call, no tools.
+
+    The reply must never be empty: Teams rejects an empty message with 400
+    BadSyntax, and the SDK surfaces that into the chat as "Exception caught".
+    Found live 5 Aug 2026 - a split message made megumi return empty text,
+    and [""] is truthy while "" is not, so the old `if findings` check let
+    the empty string straight through.
+    """
     logger.info("respond composing")
     findings = state["findings"]
-    body = findings[0] if findings else "(no findings)"
+    body = (findings[0] if findings else "") or "(no findings)"
     return {"reply": body, "steps": ["respond"]}
 
 
