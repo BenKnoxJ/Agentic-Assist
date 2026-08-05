@@ -31,6 +31,7 @@ No Azure Functions, no Queue Storage, no Direct Line.
 
 ## Consequences
 - **A turn in flight does not survive a restart.** The acknowledgement is sent, the reply is not. Accepted at step 2; the checkpointer at step 4 is what makes resumption possible, and the gap should be closed there rather than papered over now.
+  **Closed 2026-08-05 by ADR 0008** — the outbox records the debt at the acknowledgement, matched by turn id, and startup recovery resumes it from the checkpoint under ADR 0009's per-conversation lock. Verified live: a turn killed mid-agent-call was delivered by the next process.
 - **Background tasks must be held in a module-level set.** `asyncio` keeps only weak references to tasks, so an unheld task can be garbage-collected mid-flight and the reply disappears with no error.
 - `/health` reports `turns_in_flight`, so work in progress is visible rather than inferred.
 - Graph failures inside a background task cannot become an HTTP error code. They are caught, logged, and reported to the user as a message (§10 property 4).

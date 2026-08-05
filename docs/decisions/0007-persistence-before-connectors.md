@@ -31,4 +31,4 @@ Swap them. Persistence and service management become **step 3**; the two read co
 - The Agents SDK version check (§13 item 2) is already closed, so nothing in step 4 is blocked by this swap.
 
 ## Related
-- ADR 0006 — the two-part reply, whose in-flight loss on restart is one of the gaps this addresses.
+- ADR 0006 — the two-part reply, whose in-flight loss on restart is one of the gaps this addresses. **The systemd half landed with this step; the resumption half followed on 2026-08-05 via ADR 0008.**

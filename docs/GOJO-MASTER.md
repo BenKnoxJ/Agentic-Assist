@@ -1,6 +1,6 @@
 # Gojo — Master Document
 
-**Version:** 3.4 — build in progress
+**Version:** 3.5 — build in progress
 **Date:** 5 August 2026
 **Owner:** Ben Knox (GitHub: `BenKnoxJ`)
 **Repo:** `BenKnoxJ/Agentic-Assist` (private monorepo)
@@ -13,6 +13,8 @@
 > **What changed in v3.2:** memory promoted from a folder of markdown to a **three-layer architecture** (§9.1), and retrieval moved from *deferred* to **committed and sequenced as build step 6** (§12) — Postgres 17 + pgvector + Voyage. §13 item 1 answered by measurement. §18 added to stop document drift.
 >
 > **What changed in v3.3:** **build step 2 is complete** — Gojo answers from Teams on a phone, behind JWT validation and a single-user allow-list. **Steps 3 and 4 are swapped** (ADR 0007): persistence, sessions and systemd now come before connectors, because using the system showed continuity and surviving a restart matter before tenant-wide mail permissions do.
+>
+> **What changed in v3.5:** the in-flight gap is **closed** — ADR 0008 built and verified on the box (an acknowledged turn killed mid-agent-call was resumed and delivered by the next process). Its four review rounds exposed the root cause as a live defect, settled as **ADR 0009**: all graph operations on a conversation are now serialised, which also fixed `/new` being silently reverted when racing an in-flight turn. Two further live bugs found by the acceptance run: an empty agent answer became an empty Teams message (400), and megumi's `max_turns=1` silenced every resumed session.
 >
 > **What changed in v3.4:** **build step 3 is complete** — persistence, systemd and session controls. §11.0 corrected: it had drifted in five places, marking the README and the step-3 debt list as outstanding when both were closed, and still describing step 3 as in progress. One genuinely open gap now appears in this document for the first time — an acknowledged Teams turn is still lost on restart (**ADR 0008**). It was recorded in ADR 0006's consequences and again in ADR 0007's context, but never anywhere this document tracks open work, which is why it went unactioned across two sessions.
 
@@ -484,12 +486,13 @@ Six properties, deliberately no more. This exists to stop scope creep dressed as
 | CI | ✅ ruff + pytest on push and PR; pip-audit advisory |
 | **Teams surface** | ✅ App package installed, JWT enforced, allow-list of one user, two-part reply proven on a real channel |
 | Conversation continuity | ✅ `AsyncSqliteSaver` keyed by Teams conversation + `ClaudeSDKClient` sessions. Verified across turns and a simulated restart |
-| systemd service | ✅ `gojo.service`, enabled at boot, restart-survival verified (properties 1 and 2 true) |
+| systemd service | ✅ `gojo.service`, enabled at boot, restart-survival verified — including a turn in flight, since ADR 0008 (properties 1 and 2 true) |
 | Runaway guards | ✅ 180s wall clock, explicit `recursion_limit`, 5 agent calls/turn with a graceful exit (9.3's "use both") |
 | `/new`, `/compact`, `/help` | ✅ Verified live: compacted a conversation, carried the summary into a fresh session, answered from it |
 | Structured logging | ✅ One turn id per turn, propagated through the graph and into the SDK's own logger. `grep turn=<id>` isolates a turn |
 | **README** | ✅ Problem, architecture, decisions and honest gaps (§16) |
-| In-flight turn resumption | ❌ An acknowledged turn is still lost on restart — ADR 0008 |
+| In-flight turn resumption | ✅ Outbox + turn-id guard + startup recovery (ADR 0008). Verified live: killed mid-agent-call at the ACK, answer delivered by the next process 6s later; row settles on delivery (no duplicate); `/new` drops owed rows |
+| Per-conversation serialisation | ✅ One lock per thread — live turns, `/chat`, commands, recovery (ADR 0009). Verified live when Teams split a message and the two turns queued cleanly |
 
 **Outstanding debt from v3.1: cleared.** ADR 0004 written, this document moved to `docs/`, `build-log.md` current to 4 August, `setting_sources=[]` applied.
 
@@ -497,8 +500,7 @@ Six properties, deliberately no more. This exists to stop scope creep dressed as
 
 **Open — carry into step 4:**
 
-1. **An acknowledged turn does not survive a restart.** ADR 0006 accepted this at step 2 and deferred the fix to the checkpointer; step 3 built the checkpointer and did not close the gap, and ADR 0007 had listed it among the gaps the swap addressed. Design in **ADR 0008**. Connectors make turns slower, which widens exactly the window this protects
-2. **`checkpoints/gojo.sqlite` is not backed up** ([VPS.md](VPS.md) records it as such). Losing it loses conversation history, not the application
+1. **`checkpoints/gojo.sqlite` is not backed up** ([VPS.md](VPS.md) records it as such). Losing it now loses conversation history *and* any undelivered answers, not the application
 
 **Repo layout as built:**
 
@@ -508,7 +510,9 @@ Agentic-Assist/
 │   ├── api.py             FastAPI app, graph compiled in lifespan
 │   ├── __main__.py        server entrypoint — pins loop="asyncio", ADR 0005
 │   ├── config.py          settings + assert_subscription_auth()
-│   ├── orchestrator.py    graph, 5 nodes, routing, run_turn guards
+│   ├── orchestrator.py    graph, 5 nodes, run_turn/resume_turn guards, per-thread locks (ADR 0009)
+│   ├── outbox.py          owed replies — the ADR 0008 debt table
+│   ├── recovery.py        startup pass: resume and deliver what a restart interrupted
 │   ├── state.py           GojoState with reducers
 │   ├── teams.py           Teams surface, authorisation, two-part reply (ADR 0006)
 │   ├── commands.py        /new, /compact, /help — never reach an agent
@@ -516,7 +520,7 @@ Agentic-Assist/
 │   └── agents/
 │       ├── megumi.py      gather agent + static system prompt
 │       └── runner.py      single Agent SDK entry point (§6.3 rule 2)
-├── apps/gojo/tests/       api, commands, config, continuity, guards, teams_authorisation, teams_delivery
+├── apps/gojo/tests/       api, commands, config, continuity, guards, outbox, recovery, teams_authorisation, teams_delivery
 ├── infra/                 gojo.service, teams-app/, graph-mail-rbac.ps1
 ├── .github/workflows/     ci.yml
 ├── docs/                  GOJO-MASTER.md, build-log.md, VPS.md, decisions/ (ADRs 0001-0009)
@@ -684,4 +688,4 @@ Four artifacts now describe this project. Without a rule they drift — and they
 
 ---
 
-**Next action:** close the in-flight resumption gap (**ADR 0008** on **ADR 0009**'s per-conversation locks — the locks also fix a live `/new` race, so they land first; plan written, four review rounds, root cause settled) — it is small, needs no privileges, and connectors make the window it protects wider. Then build step 4. Run `infra/graph-mail-rbac.ps1` — needs Exchange Administrator via PIM — and confirm the **negative** scoping test returns `InScope: False` for another mailbox. Then build the Graph mail connector as Agent SDK `@tool` functions given to Megumi. **Do not grant `Mail.Read` in Entra** (§8.4).
+**Next action:** build step 4. Run `infra/graph-mail-rbac.ps1` — needs Exchange Administrator via PIM — and confirm the **negative** scoping test returns `InScope: False` for another mailbox. Then build the Graph mail connector as Agent SDK `@tool` functions given to Megumi. **Do not grant `Mail.Read` in Entra** (§8.4).

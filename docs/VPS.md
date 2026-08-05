@@ -39,7 +39,9 @@ journalctl -u gojo | grep turn=abc12345   # one complete turn, SDK lines include
 curl -s localhost:3000/health    # liveness + teams state + turns in flight
 ```
 
-`/health` returns `teams: enabled|disabled` and `turns_in_flight`. A process
+`/health` returns `teams: enabled|disabled`, `turns_in_flight` and
+`owed_replies` (ADR 0008 — steady state 0; a count that stays above 0 across
+restarts means proactive delivery is failing, not that turns are slow). A process
 that is up but not listening to Teams looks identical from outside
 otherwise.
 
@@ -95,10 +97,11 @@ rotates, update `.env` and restart — nothing else changes.
 
 | Path | Contents | Backed up? |
 |---|---|---|
-| `checkpoints/gojo.sqlite` | Conversation state, one thread per Teams chat | Not yet |
+| `checkpoints/gojo.sqlite` | Conversation state, one thread per Teams chat, plus the `owed_replies` outbox (ADR 0008 — rows carry sender name, Entra object id and tenant id inside the serialised reference) | Not yet |
 | `.env` | Secrets | Not yet — recreate from the portal |
 
-Both are gitignored. Losing the checkpoint file loses conversation history,
+Both are gitignored. Losing the checkpoint file loses conversation history
+and any not-yet-delivered answers,
 not the application.
 
 ## Recovery

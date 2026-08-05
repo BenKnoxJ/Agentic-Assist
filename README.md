@@ -163,10 +163,15 @@ LangSmith because the Agent SDK runs in a subprocess, so orchestration is
 traced and thinking is not. Session replay makes a long conversation cost
 several times a short one. And a turn acknowledged but not yet answered does
 not survive a restart — the acknowledgement is sent, the reply is not. That
-one is designed and specified in **ADR 0008** and not yet built. It sat in
-two ADRs' prose for two sessions without ever reaching the master document's
-list of open work, which is itself the argument for the ownership rule that
-document now carries.
+that one is now closed: **ADR 0008**'s outbox records the promise before
+the acknowledgement, and startup recovery resumes it from the checkpoint —
+verified live by killing the service mid-answer and watching the reply
+arrive from a process that did not exist when the question was asked. The
+fix's four review rounds also unearthed the real root cause, **ADR 0009**:
+nothing serialised operations on a conversation, a live bug in its own
+right. The gap itself sat in two ADRs' prose for two sessions without ever
+reaching the master document's list of open work, which is the argument for
+the ownership rule that document now carries.
 
 ## Running the tests
 
@@ -175,7 +180,7 @@ uv sync
 uv run pytest -q
 ```
 
-46 tests, no network and no inference spend — every one swaps the Agent SDK
+87 tests, no network and no inference spend — every one swaps the Agent SDK
 at a single injectable seam. That seam exists precisely so the graph can be
 tested end to end in seconds without spawning a subprocess.
 

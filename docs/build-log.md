@@ -121,3 +121,33 @@ Agentic-Assist on a Python uv workspace · langgraph 1.2.10 + langchain-core 1.5
 Steps 1-3 complete · 46 tests · Teams live behind JWT + single-user allow-list · systemd, restart-survival verified · continuity via checkpointer + SDK sessions · runaway guards · session commands · structured logging · ADRs 0005-0007 · README · 8.3/8.4 corrected.
 
 **Next session:** run `infra/graph-mail-rbac.ps1` (needs Exchange Administrator via PIM), verify the negative scoping test, then build the Graph mail connector as SDK `@tool` functions given to Megumi.
+
+## Session 4 — In-flight resumption (ADR 0008) and the root cause behind it (ADR 0009)
+
+**Date:** 2026-08-05
+**Goal:** Close ADR 0006's accepted gap: an acknowledged Teams turn is lost if the process restarts before the proactive reply.
+**Outcome:** Closed and verified live. Four independent design reviews before a line of code; the fourth-round root cause became ADR 0009. The on-box acceptance run found two further live bugs and fixed them.
+
+### 1. Design — four review rounds, each finding a real defect
+- Round 1-2: unguarded recovery would deliver the NEW question's answer twice (`ainvoke(None)` returns whatever the thread's latest turn produced).
+- The fix, a checkpoint-id pin, was worse: **the pin moves during the owed turn's own progress** (ACK observes `next=('megumi',)`, then `megumi` and `respond` checkpoint), so it abandoned exactly the replies it existed to deliver. Round 3.
+- Round 3's turn-id guard reopened `/new`, which `aupdate_state` makes invisible to it. Round 4 found the guard was check-then-act over a resume that holds the thread for seconds.
+- **Root cause (ADR 0009): nothing serialises operations on one conversation.** Measured on the deployed code with no recovery involved: `/new` racing an in-flight turn was silently reverted (checkpoint fork), overlapping turns forked history. One lock per thread fixed the class; every prior defect was a shadow of it.
+
+### 2. Execution — 8 tasks, TDD, one commit each
+- Pre-existing bug fixed first: **the test suite wrote to the production checkpoint DB** (`Settings(_env_file=None)` kept the relative default path; VPS.md puts `uv run pytest` in the deploy procedure). Found independently by two reviewers.
+- `owed_replies` outbox in the checkpointer's file; `new_turn` stamps the turn id into state; `resume_turn` (same 9.3 guards); per-thread locks; debt recorded before the ACK, never able to break the turn; `/new` clears owed rows; recovery under the lock; lifespan wiring with shutdown cancellation; `owed_replies` on `/health`.
+- **Gotcha:** asyncio.Lock binds to the loop that first acquires it; module-level registry + pytest's per-test loops = "bound to a different event loop". Autouse conftest fixture clears the registry; production has one loop for the process lifetime (ADR 0009 records the assumption).
+- **Gotcha:** a cancel-mid-graph test raced the first checkpoint write and flaked with EmptyInputError. Deterministic shape: crash first, then hang the resume.
+
+### 3. Acceptance on the box — two staging misfires, two real bugs, then proof
+- Misfire 1: a ~5s turn beats a human-relayed restart. Misfire 2: a 5-minute watcher window expired. Fix: a script that kills the service the instant the debt row appears; `FAST_REPLY_SECONDS=1.0` via a temporary systemd drop-in so every turn ACKs (removed after).
+- **Live bug 1:** Teams split a long message; the fragment turn's megumi returned empty text; `[""]` is truthy, `""` is not, so respond passed it through; Teams 400s an empty activity and the SDK surfaced "Exception caught" into the chat. The same trace showed the ADR 0009 lock serialising the split turns cleanly. Fixed with a fallback in respond plus a belt in `_run_graph`.
+- **Live bug 2:** every RESUMED session returned empty text ("(no findings)"), deterministically, while fresh sessions answered. Megumi's `max_turns=1` dated from the tool-less stub; the SDK's turn accounting spans a resumed session, so the cap was spent before the model spoke. Now takes `max_turns_per_agent` (8); the runner logs subtype + turn count whenever an agent returns no text.
+- **Proof (turn 03b655b8):** /new 21:41:42 → question → ACK 21:41:57 (debt recorded) → **service killed 21:41:58 mid-agent-call** → new process 21:41:59: "recovering 1 owed repl(ies)", resumes the same turn id → **21:42:03 "recovery delivered 1 of 1"** — the user's answer arrived from a process that did not exist when the question was asked. Kill-to-delivery ~6s. Settle-on-delivery separately proven: killed 2s after a delivered answer, next boot ran zero recovery passes, no duplicate.
+- The moved-on and /new-during-recovery scenarios are unit-covered (guard + lock); not re-staged live — the timing cannot be reliably staged by hand and the mechanisms were each proven separately.
+
+### Session 4 result
+Steps 1-3 remain complete, hardened · 87 tests · in-flight turns survive restarts, verified live · per-conversation serialisation (ADR 0009) fixing a live /new race · empty-answer and max_turns=1 bugs fixed · tests no longer touch the production DB · ADRs 0008-0009 · four review rounds recorded, including the reviews' own wrong turns.
+
+**Next session:** build step 4 — run `infra/graph-mail-rbac.ps1` (Exchange Administrator via PIM), verify the negative scoping test, then the Graph mail connector as SDK `@tool` functions.
