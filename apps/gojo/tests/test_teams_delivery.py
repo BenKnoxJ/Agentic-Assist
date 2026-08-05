@@ -8,6 +8,7 @@ never did, and the traceback surfaced inside the SDK's telemetry as
 "'ConversationReference' object has no attribute 'recipient'".
 """
 
+import aiosqlite
 import pytest
 from microsoft_agents.activity import (
     Activity,
@@ -17,7 +18,8 @@ from microsoft_agents.activity import (
     ConversationReference,
 )
 
-from gojo.teams import deliver_reply
+from gojo import outbox
+from gojo.teams import deliver_reply, note_debt, settle_debt
 
 AGENT_ID = "2b6bad70-0000-0000-0000-000000000000"
 
@@ -75,3 +77,61 @@ async def test_delivery_failure_is_contained() -> None:
             raise RuntimeError("service url unreachable")
 
     assert await deliver_reply(BrokenAdapter(), AGENT_ID, a_reference(), "x") is False
+
+
+@pytest.mark.asyncio
+async def test_noting_a_debt_writes_a_row_that_survives(tmp_path) -> None:
+    """The producer side. Recovery is worthless if this never runs."""
+    async with aiosqlite.connect(str(tmp_path / "cp.sqlite")) as conn:
+        await outbox.create_table(conn)
+
+        assert await note_debt(conn, "turn1", "conv-a", a_reference().model_dump_json())
+
+        owed = await outbox.list_owed(conn)
+
+    assert [r.turn_id for r in owed] == ["turn1"]
+    assert "29:user" in owed[0].reference
+
+
+@pytest.mark.asyncio
+async def test_a_failed_note_does_not_break_the_turn(tmp_path) -> None:
+    """Losing the debt is better than losing the acknowledgement."""
+
+    class BrokenConn:
+        async def execute(self, *args):
+            raise RuntimeError("database is locked")
+
+    assert await note_debt(BrokenConn(), "turn1", "conv-a", "{}") is False
+
+
+@pytest.mark.asyncio
+async def test_noting_without_an_outbox_is_a_no_op() -> None:
+    assert await note_debt(None, "turn1", "conv-a", "{}") is False
+
+
+@pytest.mark.asyncio
+async def test_a_delivered_reply_settles_its_debt(tmp_path) -> None:
+    async with aiosqlite.connect(str(tmp_path / "cp.sqlite")) as conn:
+        await outbox.create_table(conn)
+        await outbox.record(conn, "turn1", "conv-a", "{}")
+
+        await settle_debt(conn, "turn1", delivered=True)
+
+        assert await outbox.list_owed(conn) == []
+
+
+@pytest.mark.asyncio
+async def test_an_undelivered_reply_stays_owed(tmp_path) -> None:
+    """A failed send leaves the debt for a later boot to retry."""
+    async with aiosqlite.connect(str(tmp_path / "cp.sqlite")) as conn:
+        await outbox.create_table(conn)
+        await outbox.record(conn, "turn1", "conv-a", "{}")
+
+        await settle_debt(conn, "turn1", delivered=False)
+
+        assert [r.turn_id for r in await outbox.list_owed(conn)] == ["turn1"]
+
+
+@pytest.mark.asyncio
+async def test_settling_without_an_outbox_is_a_no_op() -> None:
+    await settle_debt(None, "turn1", delivered=True)

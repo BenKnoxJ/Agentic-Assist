@@ -34,6 +34,7 @@ from microsoft_agents.hosting.core import (
     TurnState,
 )
 
+from gojo import outbox
 from gojo.commands import handle as handle_command
 from gojo.commands import is_command
 from gojo.logs import new_turn_id
@@ -43,6 +44,12 @@ logger = logging.getLogger(__name__)
 
 ACK = "On it — give me a moment."
 REFUSAL = "This assistant is private and isn't available to you."
+
+# Module-level so recovery.py imports it rather than keeping a second copy. A
+# recovered turn that cannot be finished should read like any other failed
+# turn, and two identical strings with a comment asking future editors to keep
+# them in step is not a mechanism.
+FAILED = "Something went wrong on my side. Nothing was changed."
 
 
 def is_authorised(
@@ -110,6 +117,36 @@ async def deliver_reply(
         return False
 
 
+async def note_debt(outbox_conn, turn_id: str, thread_id: str, reference: str) -> bool:
+    """Record that a reply is owed. Returns whether it was recorded.
+
+    ⚠ Never raises. This runs immediately before the acknowledgement, so an
+    exception here would cost the user their answer *and* the acknowledgement
+    that one is coming - turning a database problem into a dead Teams turn.
+    Losing the debt is strictly better (ADR 0008).
+    """
+    if outbox_conn is None:
+        return False
+    try:
+        await outbox.record(outbox_conn, turn_id, thread_id, reference)
+        return True
+    except Exception:
+        logger.exception("could not record an owed reply on thread %s", thread_id)
+        return False
+
+
+async def settle_debt(outbox_conn, turn_id: str, *, delivered: bool) -> None:
+    """Close out an owed reply, or leave it for a later boot to retry.
+
+    A failed delivery deliberately leaves the row: the answer is still owed.
+    Note the outbox is only drained at startup, so an in-process failure waits
+    for the next restart (ADR 0008).
+    """
+    if outbox_conn is None or not delivered:
+        return
+    await outbox.clear(outbox_conn, turn_id)
+
+
 def build_agent_app(
     adapter,
     graph,
@@ -118,6 +155,7 @@ def build_agent_app(
     allowed_users: frozenset[str],
     expected_tenant: str,
     fast_reply_seconds: float,
+    outbox_conn=None,
 ) -> AgentApplication:
     """Wire the Teams surface onto an already-compiled graph.
 
@@ -134,6 +172,9 @@ def build_agent_app(
         fast_reply_seconds: how long to wait for an answer before sending
             an acknowledgement instead. Must stay under the channel's
             response timeout.
+        outbox_conn: an aiosqlite connection holding the owed-replies table,
+            or None to record nothing. None is correct for /chat and for
+            tests, where nothing is acknowledged and so nothing is owed.
     """
     # MemoryStorage holds the SDK's own conversation state, which is separate
     # from LangGraph's. In-process, so it does not survive a restart - matching
@@ -176,17 +217,21 @@ def build_agent_app(
             # 10.4: a dead upstream degrades the answer, it does not kill the
             # process. The user gets told rather than left waiting forever.
             logger.exception("graph failed for a Teams turn")
-            return "Something went wrong on my side. Nothing was changed."
+            return FAILED
 
-    async def _deliver_when_done(task: asyncio.Task, reference: ConversationReference) -> None:
-        """Wait for a slow turn and send its answer as a new message."""
-        await deliver_reply(adapter, agent_id, reference, await task)
+    async def _deliver_when_done(
+        task: asyncio.Task, reference: ConversationReference, turn_id: str
+    ) -> None:
+        """Wait for a slow turn, send its answer, and settle the debt."""
+        delivered = await deliver_reply(adapter, agent_id, reference, await task)
+        await settle_debt(outbox_conn, turn_id, delivered=delivered)
 
     @app.activity(ActivityTypes.message)
     async def on_message(context: TurnContext, state: TurnState) -> bool:
         """Authorise, acknowledge inside the timeout, then hand off."""
-        # Stamped before anything else so even a refusal is traceable.
-        new_turn_id()
+        # Stamped before anything else so even a refusal is traceable. Kept:
+        # it is also the identity an owed reply is recorded under (ADR 0008).
+        turn = new_turn_id()
         sender = context.activity.from_property
         aad_id = sender.aad_object_id if sender else None
         tenant = context.activity.conversation.tenant_id if context.activity.conversation else None
@@ -243,8 +288,13 @@ def build_agent_app(
             elapsed,
             fast_reply_seconds,
         )
+        # The acknowledgement creates the debt (ADR 0008), so the row goes down
+        # before it. `turn` is the whole identity: recovery matches it against
+        # the turn id the graph stamped into state, which is stable while this
+        # turn runs and changes when the next one starts.
+        await note_debt(outbox_conn, turn, thread_id, reference.model_dump_json())
         await context.send_activity(ACK)
-        _track(asyncio.create_task(_deliver_when_done(task, reference)))
+        _track(asyncio.create_task(_deliver_when_done(task, reference, turn)))
         return True
 
     return app
