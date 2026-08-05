@@ -42,6 +42,12 @@ class GojoState(TypedDict):
     # which is also what /new restores.
     session_id: str | None
 
+    # Which turn this state belongs to. Written by new_turn from the same
+    # contextvar the logs use, so a row in the outbox can be matched to the
+    # turn it was owed for. A checkpoint id cannot do this job: it advances
+    # while the owed turn is still running. ADR 0008.
+    turn_id: str
+
     # Agent invocations used this turn. Plain int, no reducer: nodes
     # overwrite it, and new_turn resets it to 0. See 9.3.
     agent_calls: int

@@ -11,6 +11,7 @@ from langgraph.graph import END, START, StateGraph
 
 from gojo.agents.megumi import gather
 from gojo.config import get_settings
+from gojo.logs import turn_id as turn_id_var
 from gojo.state import GojoState
 
 logger = logging.getLogger(__name__)
@@ -28,8 +29,18 @@ def new_turn(state: GojoState) -> dict:
 
     With a checkpointer the previous turn's state is still here. Steps and
     findings describe one turn and must not carry over; session_id must.
+
+    The turn id is stamped here rather than anywhere else because this node
+    runs exactly once per turn, at the start - which is what makes it a
+    reliable identity for recovery to match against (ADR 0008).
     """
-    return {"steps": None, "findings": None, "reply": "", "agent_calls": 0}
+    return {
+        "steps": None,
+        "findings": None,
+        "reply": "",
+        "agent_calls": 0,
+        "turn_id": turn_id_var.get(),
+    }
 
 
 def classify(state: GojoState) -> dict:
@@ -130,6 +141,48 @@ async def run_turn(graph, message: str, thread_id: str) -> dict:
         )
         raise GraphTimeout(
             f"turn exceeded {settings.graph_timeout_seconds}s"
+        ) from exc
+
+
+async def resume_turn(graph, thread_id: str) -> dict:
+    """Finish a turn that was interrupted, from its last checkpoint.
+
+    The sibling of run_turn: same guards, no initial state. Passing None tells
+    LangGraph to continue the thread rather than start a turn.
+
+    Verified against langgraph 1.2.10: a thread that had already completed
+    returns its final state and re-runs nothing, so the caller needs no branch
+    for "crashed before finishing" versus "crashed before delivering".
+
+    ⚠ It does not check *which* turn it resumes. On a thread that has since run
+    a new turn this returns the new turn's state, so the caller must establish
+    that the thread still belongs to the turn it cares about. recovery.py does
+    that by matching turn ids.
+
+    Separate from run_turn rather than a flag on it for the reason run_turn's
+    own docstring gives - the 9.3 guards live at one surface.
+
+    Raises:
+        GraphTimeout: the resumed turn exceeded graph_timeout_seconds.
+    """
+    settings = get_settings()
+    config = {
+        "configurable": {"thread_id": thread_id},
+        "recursion_limit": settings.recursion_limit,
+    }
+
+    try:
+        return await asyncio.wait_for(
+            graph.ainvoke(None, config), timeout=settings.graph_timeout_seconds
+        )
+    except TimeoutError as exc:
+        logger.error(
+            "resumed turn timed out after %ss on thread %s",
+            settings.graph_timeout_seconds,
+            thread_id,
+        )
+        raise GraphTimeout(
+            f"resumed turn exceeded {settings.graph_timeout_seconds}s"
         ) from exc
 
 
