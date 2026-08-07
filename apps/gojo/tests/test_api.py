@@ -107,6 +107,56 @@ def test_empty_message_rejected(client: TestClient) -> None:
     assert client.post("/chat", json={"message": ""}).status_code == 422
 
 
+VALID_PROPOSAL_JSON = (
+    '{"op": "draft", "kind": "new", "to": ["amy@example.org"], '
+    '"subject": "Setup session", "body": "Hi Amy."}'
+)
+
+
+def _composing(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake(message, resume=None, summary=""):
+        return AgentResult(text=VALID_PROPOSAL_JSON, session_id="s-sukuna")
+
+    monkeypatch.setattr(orchestrator, "compose", fake)
+
+
+def test_chat_speaks_the_approval_protocol(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole gate loop over curl - ladder step 1's rehearsal shape.
+    Without credentials the execute step fails safe, which proves the gate
+    sits before the capability, not the other way round."""
+    _composing(monkeypatch)
+
+    paused = client.post(
+        "/chat", json={"message": "draft an email to amy about setup", "thread_id": "g1"}
+    )
+    assert "Setup session" in paused.json()["reply"]  # the exact payload shown
+
+    resumed = client.post("/chat", json={"message": "yes", "thread_id": "g1"})
+    body = resumed.json()
+    assert body["steps"][-3:] == ["gate", "execute", "respond"]
+    assert "isn't configured" in body["reply"]  # no creds -> fail-safe, not a write
+
+
+def test_chat_free_text_on_a_paused_gate_cancels_loudly(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from gojo.teams import CANCELLED_NOTICE
+
+    _composing(monkeypatch)
+    client.post(
+        "/chat", json={"message": "draft an email to amy about setup", "thread_id": "g2"}
+    )
+
+    reply = client.post(
+        "/chat", json={"message": "what needs my attention today", "thread_id": "g2"}
+    ).json()["reply"]
+
+    assert reply.startswith(CANCELLED_NOTICE)
+    assert "stub findings" in reply  # the message then ran as a normal turn
+
+
 def test_upstream_failure_is_contained(client: TestClient) -> None:
     """A dead agent returns 502, it does not take the process down."""
 

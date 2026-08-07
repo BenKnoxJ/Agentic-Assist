@@ -21,16 +21,26 @@ def fresh_thread_locks():
 
 
 @pytest.fixture(autouse=True)
-def fresh_tool_clients():
-    """Drop cached connector clients before and after every test.
+def fresh_tool_clients(monkeypatch):
+    """No test may ever build a connector client from the real .env.
 
-    Same class of hazard as the locks above, plus one more: pytest runs on
-    the box with the real .env present (VPS.md deploy sequence), so a client
-    cached from one test's settings must never leak into another - and no
-    test may inherit a client built from real credentials.
+    pytest runs on the box with the real credentials present (VPS.md deploy
+    sequence). This was not hypothetical: an api-level gate test reached
+    write_client(), built a real GraphMailClient and made a live Graph call
+    mid-suite (7 Aug 2026). Both factory modules therefore see unconfigured
+    settings under test, unconditionally - tests that need a client inject
+    a fake through the factory seam. Caches and the ledger connection are
+    also cleared both sides, for the same isolation reasons as the locks.
     """
     from gojo import actions
     from gojo.agents import tools
+    from gojo.config import Settings
+
+    def unconfigured() -> Settings:
+        return Settings(_env_file=None)
+
+    monkeypatch.setattr(tools, "get_settings", unconfigured)
+    monkeypatch.setattr(actions, "get_settings", unconfigured)
 
     tools.reset_clients()
     actions.reset_clients()

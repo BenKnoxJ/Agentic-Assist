@@ -29,10 +29,21 @@ from gojo.commands import handle as handle_command
 from gojo.commands import is_command
 from gojo.config import assert_subscription_auth, get_settings
 from gojo.logs import new_turn_id
-from gojo.orchestrator import GraphTimeout, build_graph, run_locked
+from gojo.orchestrator import (
+    GraphTimeout,
+    build_graph,
+    resume_gate_locked,
+    run_locked,
+)
 from gojo.recovery import recover_owed_replies
 from gojo.state import Intent
-from gojo.teams import build_agent_app, in_flight_count
+from gojo.teams import (
+    NO_LONGER_PENDING,
+    assess_gate_traffic,
+    build_agent_app,
+    in_flight_count,
+    outcome_from_result,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -235,7 +246,13 @@ async def messages(request: Request) -> Response:
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
-    """Run one message through the orchestrator and return the reply."""
+    """Run one message through the orchestrator and return the reply.
+
+    Speaks the same approval protocol as Teams (text decisions only - no
+    cards over curl), which makes the whole gate rehearsable before a phone
+    is involved and stops a paused "chat" thread stranding a proposed
+    action forever.
+    """
     new_turn_id()
     # Same command handling as Teams, so behaviour can be exercised from curl
     # rather than only from a phone. No outbox connection on purpose: /chat
@@ -243,6 +260,27 @@ async def chat(request: ChatRequest) -> ChatResponse:
     if is_command(request.message):
         reply = await handle_command(app.state.graph, request.message, request.thread_id)
         return ChatResponse(reply=reply, intent="unknown", steps=["command"])
+
+    traffic = await assess_gate_traffic(
+        app.state.graph, None, request.message, request.thread_id
+    )
+    if traffic.kind == "notice":
+        return ChatResponse(reply=traffic.text, intent="act", steps=["gate"])
+    cancelled_prefix = f"{traffic.text}\n\n" if traffic.kind == "cancelled" else ""
+    if traffic.kind == "resume":
+        try:
+            result = await resume_gate_locked(
+                app.state.graph, traffic.decision, request.thread_id
+            )
+        except GraphTimeout as exc:
+            raise HTTPException(status_code=504, detail=str(exc)) from exc
+        if result is None:
+            return ChatResponse(reply=NO_LONGER_PENDING, intent="act", steps=["gate"])
+        return ChatResponse(
+            reply=outcome_from_result(result).text,
+            intent=result.get("intent", "act"),
+            steps=result.get("steps", []),
+        )
 
     try:
         # Locked like every other graph entry point (ADR 0009), so a curl
@@ -255,7 +293,9 @@ async def chat(request: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=502, detail=f"orchestrator failed: {exc}") from exc
 
     return ChatResponse(
-        reply=result["reply"],
+        # An interrupt result becomes the approval prompt - the paused turn
+        # has no reply of its own.
+        reply=cancelled_prefix + outcome_from_result(result).text,
         intent=result["intent"],
         steps=result["steps"],
     )
