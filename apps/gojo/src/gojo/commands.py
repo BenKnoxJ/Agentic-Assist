@@ -10,9 +10,11 @@ with no adapter, no Teams, and no subprocess.
 
 import logging
 
-from gojo import outbox
+from langgraph.graph import END
+
+from gojo import actions, outbox
 from gojo.agents.megumi import SUMMARISE, gather
-from gojo.orchestrator import lock_for
+from gojo.orchestrator import gate_pending, lock_for
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +28,10 @@ Anything else is treated as a question."""
 NEW_DONE = "Fresh start — I've forgotten everything before this."
 COMPACT_EMPTY = "Nothing to compact yet — this conversation hasn't started."
 COMPACT_FAILED = "I couldn't summarise the conversation, so I've left it as it was."
+COMPACT_BLOCKED = (
+    "There's an action waiting for your decision — approve it, reject it, or "
+    "say anything else to discard it. Then /compact."
+)
 
 
 def is_command(text: str) -> bool:
@@ -73,7 +79,21 @@ async def _new(graph, thread_id: str, outbox_conn=None) -> str:
     recovery's guard cannot tell that this conversation was discarded;
     without this, /new is followed by an answer to the question it discarded
     (ADR 0008).
+
+    A paused gate is not left alone either - and its check runs FIRST,
+    because the values-update below empties snapshot.interrupts while the
+    gate stays resumable (verified 1.2.10, ADR 0011): checked after, the
+    gate would look gone while its task still holds the thread.
     """
+    snapshot = await graph.aget_state(_config(thread_id))
+    if gate_pending(snapshot):
+        await graph.aupdate_state(_config(thread_id), None, as_node=END)
+        conn = actions.connection()
+        if conn is not None:
+            cancelled = await actions.cancel_thread(conn, thread_id)
+            logger.info(
+                "/new cancelled %d pending action(s) on thread %s", cancelled, thread_id
+            )
     await graph.aupdate_state(_config(thread_id), {"session_id": None, "summary": ""})
     if outbox_conn is not None:
         dropped = await outbox.clear_thread(outbox_conn, thread_id)
@@ -93,6 +113,13 @@ async def _compact(graph, thread_id: str) -> str:
     length. Compacting resets that to near zero while keeping the gist.
     """
     snapshot = await graph.aget_state(_config(thread_id))
+
+    # A paused gate blocks compaction: the aupdate_state below would blind
+    # the gate guards (snapshot.interrupts empties, ADR 0011/M1), so the
+    # pending action must be decided or discarded first.
+    if gate_pending(snapshot):
+        return COMPACT_BLOCKED
+
     session_id = (snapshot.values or {}).get("session_id")
 
     if not session_id:

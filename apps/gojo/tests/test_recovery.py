@@ -610,3 +610,118 @@ async def test_recovery_never_raises_on_a_broken_table(tmp_path) -> None:
     async with aiosqlite.connect(str(tmp_path / "cp.sqlite")) as conn:
         # No create_table: every query against it fails.
         assert await recover_owed_replies(conn, None, adapter, AGENT_ID) == 0
+
+
+# --- Step 5: recovery on a gate-paused thread (ADR 0011) ---
+
+VALID_PROPOSAL_JSON = (
+    '{"op": "draft", "kind": "new", "to": ["amy@example.org"], '
+    '"subject": "Setup session", "body": "Hi Amy."}'
+)
+
+
+def _text_of(sent_item) -> str:
+    """RecordingAdapter receives str for plain replies, an Activity when a
+    card rides along - the prompt text is present either way."""
+    return getattr(sent_item, "text", sent_item)
+
+
+@pytest.fixture
+def composing(monkeypatch: pytest.MonkeyPatch):
+    """A compose stub that pauses turns at the gate."""
+
+    async def fake(message, resume=None, summary=""):
+        return AgentResult(text=VALID_PROPOSAL_JSON, session_id="s-sukuna")
+
+    monkeypatch.setattr(orchestrator, "compose", fake)
+
+
+async def test_a_gate_paused_thread_gets_its_prompt_redelivered_not_failed(
+    tmp_path, composing
+) -> None:
+    """The T9 hole: resume_turn on a paused gate re-raises the interrupt,
+    reads an empty reply, delivers FAILED and destroys the debt. The right
+    move is re-delivering the approval prompt - the promise is re-issued
+    as the question it always was."""
+    from gojo import actions
+    from gojo.logs import new_turn_id
+
+    db = str(tmp_path / "cp.sqlite")
+    adapter = RecordingAdapter()
+
+    async with AsyncSqliteSaver.from_conn_string(db) as cp:
+        graph = orchestrator.build_graph(checkpointer=cp)
+
+        async with aiosqlite.connect(db) as conn:
+            await actions.create_table(conn)
+            actions.use_connection(conn)
+
+            turn = new_turn_id()
+            result = await orchestrator.run_locked(
+                graph, "draft an email to amy about setup", "conv-a"
+            )
+            assert "__interrupt__" in result  # the gate is genuinely paused
+
+            await owe(conn, turn)
+            assert await recover_owed_replies(conn, graph, adapter, AGENT_ID) == 1
+
+            text = _text_of(adapter.sent[0])
+            assert "Setup session" in text  # the prompt, verbatim payload
+            assert text != FAILED
+            assert await outbox.list_owed(conn) == []
+
+            # The gate itself is untouched - the next message decides it.
+            snapshot = await graph.aget_state(
+                {"configurable": {"thread_id": "conv-a"}}
+            )
+            assert orchestrator.gate_pending(snapshot)
+
+
+class CrashOnceCompose:
+    """Crashes the first compose call - the likeliest real crash point."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def __call__(self, message, resume=None, summary=""):
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("process died mid-compose")
+        return AgentResult(text=VALID_PROPOSAL_JSON, session_id="s-sukuna")
+
+
+async def test_a_resume_that_runs_into_the_gate_delivers_the_prompt(
+    tmp_path, monkeypatch
+) -> None:
+    """Review M2: the crash was mid-sukuna, so at boot there is no pending
+    interrupt - the RESUME ITSELF runs into the gate. The result carries
+    __interrupt__ and must become the approval prompt, never FAILED."""
+    from gojo import actions
+    from gojo.logs import new_turn_id
+
+    crashing = CrashOnceCompose()
+    monkeypatch.setattr(orchestrator, "compose", crashing)
+
+    db = str(tmp_path / "cp.sqlite")
+    adapter = RecordingAdapter()
+
+    async with AsyncSqliteSaver.from_conn_string(db) as cp:
+        graph = orchestrator.build_graph(checkpointer=cp)
+
+        async with aiosqlite.connect(db) as conn:
+            await actions.create_table(conn)
+            actions.use_connection(conn)
+
+            turn = new_turn_id()
+            with pytest.raises(RuntimeError):
+                await orchestrator.run_locked(
+                    graph, "draft an email to amy about setup", "conv-a"
+                )
+
+            await owe(conn, turn)
+            assert await recover_owed_replies(conn, graph, adapter, AGENT_ID) == 1
+
+            text = _text_of(adapter.sent[0])
+            assert "Setup session" in text
+            assert text != FAILED
+            assert crashing.calls == 2  # resumed through sukuna into the gate

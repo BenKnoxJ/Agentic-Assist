@@ -26,10 +26,11 @@ import logging
 from microsoft_agents.activity import ConversationReference
 
 from gojo import outbox
+from gojo.approval import build_card, render_prompt
 from gojo.config import get_settings
 from gojo.logs import turn_id as turn_id_var
-from gojo.orchestrator import GraphTimeout, lock_for, resume_turn
-from gojo.teams import FAILED, deliver_reply
+from gojo.orchestrator import GraphTimeout, gate_pending, lock_for, resume_turn
+from gojo.teams import FAILED, deliver_reply, outcome_from_result
 
 logger = logging.getLogger(__name__)
 
@@ -133,23 +134,45 @@ async def _deliver_one(conn, graph, adapter, agent_id: str, row) -> bool:
             await _forget(conn, row.turn_id)
             return False
 
-        try:
-            result = await resume_turn(graph, row.thread_id)
-            text = result.get("reply") or FAILED
-        except GraphTimeout:
-            # The same words a live turn uses when it overruns, rather than
-            # the generic failure - the cause is different and the user can
-            # act on it.
-            logger.error("resumed turn timed out on thread %s", row.thread_id)
-            text = TIMED_OUT
-        except Exception:
-            # A turn that cannot be completed is still answered. The promise
-            # was a reply, not a correct one.
-            logger.exception("could not resume thread %s", row.thread_id)
-            text = FAILED
+        proposal = (snapshot.values or {}).get("proposal") or {}
+        if gate_pending(snapshot) and proposal:
+            # A paused gate must NOT be resumed - ainvoke(None) would re-hit
+            # the interrupt, read an empty reply and deliver FAILED, eating
+            # the debt while the gate silently persists (ADR 0011). The
+            # promise is re-issued as the question it always was; the gate
+            # itself stays pending, and the user's next message decides it -
+            # so clearing the row on delivery loses nothing.
+            logger.info(
+                "re-delivering approval prompt for action %s on thread %s",
+                proposal.get("action_id"),
+                row.thread_id,
+            )
+            text = render_prompt(proposal)
+            card = build_card(proposal)
+        else:
+            card = None
+            try:
+                result = await resume_turn(graph, row.thread_id)
+                # outcome_from_result, not result["reply"]: if the crash was
+                # mid-compose, this resume itself runs INTO the gate and the
+                # result carries __interrupt__ - that is the approval prompt,
+                # never a failure (ADR 0011, review M2).
+                outcome = outcome_from_result(result)
+                text, card = outcome.text, outcome.card
+            except GraphTimeout:
+                # The same words a live turn uses when it overruns, rather
+                # than the generic failure - the cause is different and the
+                # user can act on it.
+                logger.error("resumed turn timed out on thread %s", row.thread_id)
+                text = TIMED_OUT
+            except Exception:
+                # A turn that cannot be completed is still answered. The
+                # promise was a reply, not a correct one.
+                logger.exception("could not resume thread %s", row.thread_id)
+                text = FAILED
 
         reference = ConversationReference.model_validate_json(row.reference)
-        if await deliver_reply(adapter, agent_id, reference, text):
+        if await deliver_reply(adapter, agent_id, reference, text, card):
             await _forget(conn, row.turn_id)
             return True
 

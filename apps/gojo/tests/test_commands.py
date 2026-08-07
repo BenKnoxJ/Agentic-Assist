@@ -146,7 +146,12 @@ async def test_new_clears_the_conversations_owed_replies(tmp_path) -> None:
     from gojo import outbox
 
     class FakeGraph:
-        async def aupdate_state(self, config, values):
+        async def aget_state(self, config):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(next=(), interrupts=(), values={})
+
+        async def aupdate_state(self, config, values, as_node=None):
             return None
 
     async with aiosqlite.connect(str(tmp_path / "cp.sqlite")) as conn:
@@ -163,7 +168,86 @@ async def test_new_without_an_outbox_still_works() -> None:
     """/chat passes no connection."""
 
     class FakeGraph:
-        async def aupdate_state(self, config, values):
+        async def aget_state(self, config):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(next=(), interrupts=(), values={})
+
+        async def aupdate_state(self, config, values, as_node=None):
             return None
 
     assert await commands.handle(FakeGraph(), "/new", "conv-a") == NEW_DONE
+
+
+# --- Step 5: commands on a gate-paused thread (ADR 0011) ---
+
+VALID_PROPOSAL_JSON = (
+    '{"op": "draft", "kind": "new", "to": ["amy@example.org"], '
+    '"subject": "Setup session", "body": "Hi Amy."}'
+)
+
+
+@pytest.fixture
+def composing(monkeypatch: pytest.MonkeyPatch):
+    async def fake(message, resume=None, summary=""):
+        return AgentResult(text=VALID_PROPOSAL_JSON, session_id="s-sukuna")
+
+    monkeypatch.setattr(orchestrator, "compose", fake)
+
+
+@pytest.fixture
+async def ledger(tmp_path):
+    import aiosqlite
+
+    from gojo import actions
+
+    conn = await aiosqlite.connect(tmp_path / "actions.sqlite")
+    await actions.create_table(conn)
+    actions.use_connection(conn)
+    yield conn
+    await conn.close()
+
+
+async def pause_gate(graph) -> None:
+    result = await orchestrator.run_locked(
+        graph, "draft an email to amy about setup", "conv"
+    )
+    assert "__interrupt__" in result
+
+
+async def test_new_on_a_paused_gate_cancels_it_first(
+    tmp_path, gather, composing, ledger
+) -> None:
+    """M1 ordering: the gate check must run BEFORE the values-update, which
+    would blind snapshot.interrupts while leaving the gate resumable."""
+
+    async with AsyncSqliteSaver.from_conn_string(str(tmp_path / "c.sqlite")) as cp:
+        graph = orchestrator.build_graph(checkpointer=cp)
+        await pause_gate(graph)
+
+        assert await commands.handle(graph, "/new", "conv") == NEW_DONE
+
+        snapshot = await graph.aget_state({"configurable": {"thread_id": "conv"}})
+        assert not orchestrator.gate_pending(snapshot)
+
+    rows = [r async for r in await ledger.execute("SELECT status FROM actions")]
+    assert [r[0] for r in rows] == ["cancelled"]
+
+
+async def test_compact_on_a_paused_gate_refuses(
+    tmp_path, gather, composing, ledger
+) -> None:
+    """Compacting would blind the gate guards (M1) - refuse until the
+    pending action is decided."""
+    from gojo.commands import COMPACT_BLOCKED
+
+    async with AsyncSqliteSaver.from_conn_string(str(tmp_path / "c.sqlite")) as cp:
+        graph = orchestrator.build_graph(checkpointer=cp)
+        await pause_gate(graph)
+        summarise_calls_before = len(gather)
+
+        assert await commands.handle(graph, "/compact", "conv") == COMPACT_BLOCKED
+
+        assert len(gather) == summarise_calls_before  # no summary was attempted
+        snapshot = await graph.aget_state({"configurable": {"thread_id": "conv"}})
+        assert orchestrator.gate_pending(snapshot)  # the gate is untouched
