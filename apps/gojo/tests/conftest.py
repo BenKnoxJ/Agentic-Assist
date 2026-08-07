@@ -29,8 +29,13 @@ def fresh_tool_clients():
     cached from one test's settings must never leak into another - and no
     test may inherit a client built from real credentials.
     """
+    from gojo import actions
     from gojo.agents import tools
 
     tools.reset_clients()
+    actions.reset_clients()
+    actions.use_connection(None)
     yield
     tools.reset_clients()
+    actions.reset_clients()
+    actions.use_connection(None)

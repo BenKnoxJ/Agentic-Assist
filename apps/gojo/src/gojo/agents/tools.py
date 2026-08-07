@@ -128,7 +128,9 @@ async def list_recent_mail(args: dict) -> dict:
     "Search the owner's whole mailbox (all history, all folders) with KQL: "
     'plain terms, from:, subject:, body:, received:, e.g. "from:amy '
     'Rowntree" or "subject:onboarding received:2026-07". Results are '
-    "relevance-ranked, not newest-first, at most 25 per call. Read-only.",
+    "relevance-ranked, not newest-first, at most 25 per call. Each message "
+    "carries an opaque id - quote it when proposing a reply to that message. "
+    "Read-only.",
     {"query": str, "count": int},
 )
 async def search_mail(args: dict) -> dict:

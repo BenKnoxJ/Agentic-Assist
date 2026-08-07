@@ -24,7 +24,7 @@ from microsoft_agents.hosting.fastapi import (
 )
 from pydantic import BaseModel, Field
 
-from gojo import outbox
+from gojo import actions, outbox
 from gojo.commands import handle as handle_command
 from gojo.commands import is_command
 from gojo.config import assert_subscription_auth, get_settings
@@ -88,6 +88,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await outbox.create_table(outbox_conn)
         app.state.outbox = outbox_conn
         app.state.recovery_task = None
+
+        # The action ledger shares the outbox connection - same file, same
+        # lifetime, same one-user write volume (ADR 0011). Nodes reach it via
+        # the module getter because they cannot see app.state.
+        await actions.create_table(outbox_conn)
+        actions.use_connection(outbox_conn)
+        for row in await actions.stale_open_rows(outbox_conn):
+            # An approved action a crash ate after the human said yes. Must be
+            # visible, not inferred (9.1) - the ledger row holds the payload.
+            logger.warning(
+                "action %s on thread %s is %s but never finished - "
+                "inspect the ledger before re-approving",
+                row.action_id,
+                row.thread_id,
+                row.status,
+            )
 
         app.state.adapter = None
         app.state.agent_app = None
