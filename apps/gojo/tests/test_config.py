@@ -44,3 +44,76 @@ def test_settings_has_no_api_key_field() -> None:
     """
     forbidden = {"anthropic_api_key", "api_key", "anthropic_auth_token"}
     assert forbidden.isdisjoint(Settings.model_fields)
+
+
+# Connector credentials (step 4). Same shape as the teams_* block: defaults
+# empty, secrets as SecretStr, a *_configured property that is the single
+# truth for "can this connector authenticate".
+
+
+def test_graph_not_configured_by_default() -> None:
+    assert not Settings(_env_file=None).graph_configured
+
+
+def test_graph_configured_when_all_four_fields_set() -> None:
+    settings = Settings(
+        _env_file=None,
+        graph_client_id="app-id",
+        graph_tenant_id="tenant-id",
+        graph_client_secret="graph-secret-value",
+        graph_owner_upn="owner@example.com",
+    )
+    assert settings.graph_configured
+
+
+def test_graph_not_configured_when_one_field_missing() -> None:
+    """A partially-filled connector must read as absent, not misconfigured."""
+    settings = Settings(
+        _env_file=None,
+        graph_client_id="app-id",
+        graph_tenant_id="tenant-id",
+        graph_client_secret="graph-secret-value",
+        # graph_owner_upn missing - app-only Graph cannot call /me (8.3)
+    )
+    assert not settings.graph_configured
+
+
+def test_jira_not_configured_by_default() -> None:
+    assert not Settings(_env_file=None).jira_configured
+
+
+def test_jira_configured_when_all_three_fields_set() -> None:
+    settings = Settings(
+        _env_file=None,
+        jira_base_url="https://example.atlassian.net",
+        jira_email="owner@example.com",
+        jira_api_token="jira-token-value",
+    )
+    assert settings.jira_configured
+
+
+def test_jira_not_configured_when_token_missing() -> None:
+    settings = Settings(
+        _env_file=None,
+        jira_base_url="https://example.atlassian.net",
+        jira_email="owner@example.com",
+    )
+    assert not settings.jira_configured
+
+
+def test_connector_secrets_do_not_leak_via_repr() -> None:
+    """SecretStr keeps credentials out of logs and tracebacks.
+
+    The field checks stop this passing vacuously while the fields do not
+    exist yet (extra="ignore" would silently drop the kwargs below).
+    """
+    assert "graph_client_secret" in Settings.model_fields
+    assert "jira_api_token" in Settings.model_fields
+    settings = Settings(
+        _env_file=None,
+        graph_client_secret="graph-secret-value",
+        jira_api_token="jira-token-value",
+    )
+    shown = repr(settings)
+    assert "graph-secret-value" not in shown
+    assert "jira-token-value" not in shown

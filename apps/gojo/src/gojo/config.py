@@ -39,6 +39,26 @@ class Settings(BaseSettings):
     teams_tenant_id: str = ""
     teams_client_secret: SecretStr = SecretStr("")
 
+    # Microsoft Graph mail connector (step 4). Same app registration as the
+    # Teams surface today, but deliberately separate keys: the two surfaces
+    # rotate independently, and coupling them means a Teams secret rotation
+    # silently breaks mail (or the reverse). GOJO-MASTER.md 8.3.
+    #
+    # App-only auth has no user, so /me is invalid - the connector reads
+    # /users/{graph_owner_upn}/messages. The mailbox scope itself is enforced
+    # server-side by Exchange RBAC (infra/graph-mail-rbac.ps1), never here.
+    graph_client_id: str = ""
+    graph_tenant_id: str = ""
+    graph_client_secret: SecretStr = SecretStr("")
+    graph_owner_upn: str = ""
+
+    # Jira connector (step 4). Basic auth with the owner's email + API token:
+    # a delegated identity, so currentUser() in JQL means the owner. Contrast
+    # with Graph's app-only model above - two auth models, chosen per surface.
+    jira_base_url: str = ""
+    jira_email: str = ""
+    jira_api_token: SecretStr = SecretStr("")
+
     # Comma-separated Entra object IDs allowed to talk to Gojo.
     #
     # JWT validation proves a request came from Azure Bot Service for our bot.
@@ -106,6 +126,25 @@ class Settings(BaseSettings):
             self.teams_client_id
             and self.teams_tenant_id
             and self.teams_client_secret.get_secret_value()
+        )
+
+    @property
+    def graph_configured(self) -> bool:
+        """True when the Graph mail connector has everything it needs."""
+        return bool(
+            self.graph_client_id
+            and self.graph_tenant_id
+            and self.graph_client_secret.get_secret_value()
+            and self.graph_owner_upn
+        )
+
+    @property
+    def jira_configured(self) -> bool:
+        """True when the Jira connector has everything it needs."""
+        return bool(
+            self.jira_base_url
+            and self.jira_email
+            and self.jira_api_token.get_secret_value()
         )
 
 
