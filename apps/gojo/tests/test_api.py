@@ -36,7 +36,16 @@ def client(monkeypatch: pytest.MonkeyPatch, tmp_path) -> TestClient:
             text=f"stub findings for: {message}", session_id="stub-session"
         )
 
+    async def fake_compose(
+        message: str, resume: str | None = None, summary: str = ""
+    ) -> AgentResult:
+        # ABSTAIN exercises the fail-safe path: no proposal, no gate, a
+        # plain reply. The full gate flow is covered in
+        # test_orchestrator_gate.py; /chat's own gate handling is T10.
+        return AgentResult(text="ABSTAIN", session_id="stub-session")
+
     monkeypatch.setattr(orchestrator, "gather", fake_gather)
+    monkeypatch.setattr(orchestrator, "compose", fake_compose)
     monkeypatch.setattr(
         api,
         "get_settings",
@@ -84,11 +93,14 @@ def test_read_path_routes_to_megumi(client: TestClient) -> None:
 
 
 def test_write_path_routes_to_sukuna(client: TestClient) -> None:
+    """With an abstaining compose stub the act path fails safe: no gate,
+    no proposal, a plain explanatory reply."""
     r = client.post("/chat", json={"message": "send a reply to Dave"})
     assert r.status_code == 200
     body = r.json()
     assert body["intent"] == "act"
     assert body["steps"] == ["classify", "sukuna", "respond"]
+    assert "couldn't put together" in body["reply"]
 
 
 def test_empty_message_rejected(client: TestClient) -> None:

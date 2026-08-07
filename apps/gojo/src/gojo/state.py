@@ -56,3 +56,14 @@ class GojoState(TypedDict):
     # the next one. This is 6.3 rule 3 in practice - the gist survives, the
     # transcript does not.
     summary: str
+
+    # The pending write action, set by the sukuna node when a proposal parses:
+    # {"action_id", "payload" (the canonical proposal dict), "verified_target"
+    # (fetched deterministically for replies, never agent-authored - ADR 0011)}.
+    # The ledger row is what executes; this copy is what the human is shown.
+    # Cleared by new_turn.
+    proposal: dict | None
+
+    # The gate's outcome for this turn: "approve", "reject", or "" while no
+    # decision exists. Cleared by new_turn.
+    decision: str

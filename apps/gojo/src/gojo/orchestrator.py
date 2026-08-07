@@ -7,12 +7,19 @@ and what happens with the result.
 import asyncio
 import logging
 
+from langchain_core.runnables import RunnableConfig
+from langgraph.config import get_config
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, interrupt
 
+from gojo import actions
+from gojo.actions import ActionError, new_action_id, parse_proposal
 from gojo.agents.megumi import gather
+from gojo.agents.sukuna import compose
 from gojo.config import get_settings
 from gojo.logs import turn_id as turn_id_var
 from gojo.state import GojoState
+from gojo_graph import GraphError
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +66,12 @@ def new_turn(state: GojoState) -> dict:
         "reply": "",
         "agent_calls": 0,
         "turn_id": turn_id_var.get(),
+        # A fresh message never inherits a pending action: by the time a new
+        # input reaches the graph, teams.py has already resolved or loudly
+        # cancelled any paused gate (a new input silently discards a pending
+        # interrupt - verified langgraph 1.2.10 behaviour, ADR 0011).
+        "proposal": None,
+        "decision": "",
     }
 
 
@@ -110,10 +123,162 @@ async def megumi(state: GojoState) -> dict:
     }
 
 
-def sukuna(state: GojoState) -> dict:
-    """Act agent - writes. Stub. Only ever runs behind interrupt()."""
-    logger.info("sukuna acting (stub)")
-    return {"steps": ["sukuna"]}
+COMPOSE_FAILED = (
+    "I couldn't put together a safe action from that. Nothing was proposed "
+    "or changed - try being more specific."
+)
+
+DISCARDED = "Okay — discarded. Nothing was done."
+
+
+async def sukuna(state: GojoState, config: RunnableConfig | None = None) -> dict:
+    """Compose agent - proposes writes, never performs them (ADR 0011).
+
+    Holds the same read-only tools as megumi; its output is one JSON
+    proposal, parsed strictly. Anything that doesn't parse is a fail-safe
+    reply, never an execution. The one deterministic step here: for a
+    reply, the target message is fetched by id via the connector so the
+    human is shown real sender/subject, never agent prose about them.
+    """
+    used = state.get("agent_calls", 0)
+    budget = get_settings().max_agent_calls_per_turn
+    if used >= budget:
+        logger.warning("agent budget exhausted: %d calls used this turn", used)
+        return {"findings": [BUDGET_EXHAUSTED], "steps": ["sukuna:over-budget"]}
+
+    logger.info("sukuna composing")
+    result = await compose(
+        state["message"],
+        resume=state.get("session_id"),
+        summary=state.get("summary", ""),
+    )
+    logger.info(
+        "sukuna turn: cost_usd=%s sdk_turns=%s", result.cost_usd, result.num_turns
+    )
+
+    # ⚠ Deliberately NOT writing result.session_id back: megumi's thread
+    # stays canonical, compose only borrows its context (ADR 0011, M4).
+    base = {"steps": ["sukuna"], "agent_calls": used + 1}
+
+    proposal = parse_proposal(result.text)
+    if proposal is None:
+        return {**base, "findings": [COMPOSE_FAILED]}
+
+    verified_target = None
+    if proposal.kind == "reply":
+        client = actions.write_client()
+        if client is None:
+            return {
+                **base,
+                "findings": [
+                    "The mail connector isn't configured, so I can't verify "
+                    "the reply target. Nothing was proposed."
+                ],
+            }
+        try:
+            target = await client.get_message(proposal.reply_to_message_id)
+        except GraphError as exc:
+            return {
+                **base,
+                "findings": [
+                    f"I couldn't verify the reply target: {exc} Nothing was proposed."
+                ],
+            }
+        verified_target = {"from": target["from"], "subject": target["subject"]}
+
+    conn = actions.connection()
+    if conn is None:
+        return {
+            **base,
+            "findings": [
+                "The action ledger isn't available, so I can't propose writes "
+                "right now. Nothing was changed."
+            ],
+        }
+
+    if config is None:
+        # Inside a graph run the config comes from the runtime context; the
+        # explicit parameter exists so node-level tests can pass one.
+        try:
+            config = get_config()
+        except Exception:
+            config = {}
+    action_id = new_action_id()
+    thread_id = config.get("configurable", {}).get("thread_id", "-")
+    await actions.record_proposed(
+        conn, action_id, thread_id, state.get("turn_id", "-"), proposal
+    )
+    logger.info(
+        "sukuna proposed action_id=%s op=%s kind=%s", action_id, proposal.op, proposal.kind
+    )
+    return {
+        **base,
+        "proposal": {
+            "action_id": action_id,
+            "payload": proposal.model_dump(),
+            "verified_target": verified_target,
+        },
+    }
+
+
+def route_after_sukuna(state: GojoState) -> str:
+    """Gate only when there is something to gate."""
+    return "gate" if state.get("proposal") else "respond"
+
+
+def gate(state: GojoState) -> dict:
+    """The seal. Pauses the graph until the owner decides (ADR 0011).
+
+    interrupt() is the FIRST statement on purpose: the node re-executes from
+    its start when resumed (verified langgraph 1.2.10 behaviour), so nothing
+    with a side effect may precede it - the proposal was recorded upstream
+    in sukuna. The fresh turn_id stamp keeps the outbox/recovery machinery
+    coherent for the approval turn, which never runs new_turn.
+    """
+    decision = str(interrupt(state["proposal"]))
+    logger.info(
+        "gate decision=%s action_id=%s", decision, state["proposal"]["action_id"]
+    )
+    update = {"decision": decision, "turn_id": turn_id_var.get(), "steps": ["gate"]}
+    if decision != "approve":
+        update["findings"] = [DISCARDED]
+    return update
+
+
+def route_after_gate(state: GojoState) -> str:
+    return "execute" if state.get("decision") == "approve" else "respond"
+
+
+async def execute_action(state: GojoState) -> dict:
+    """Perform the approved action. Deterministic - no model runs here.
+
+    Everything that executes comes from the ledger row (sha-verified
+    approved bytes); this node only translates the outcome into a reply.
+    """
+    proposal = state["proposal"]
+    conn = actions.connection()
+    client = actions.write_client()
+    if conn is None or client is None:
+        return {
+            "steps": ["execute"],
+            "findings": ["The write path isn't configured. Nothing was done."],
+        }
+    try:
+        result_id = await actions.execute(conn, client, proposal["action_id"])
+    except ActionError as exc:
+        logger.warning("execute failed action_id=%s: %s", proposal["action_id"], exc)
+        return {
+            "steps": ["execute"],
+            "findings": [f"I couldn't complete that: {exc} Nothing further was changed."],
+        }
+    op = proposal["payload"]["op"]
+    logger.info("executed action_id=%s result_id=%s", proposal["action_id"], result_id)
+    text = (
+        "Sent."
+        if op == "send"
+        else "Draft created — it's in your Drafts folder for you to review and send."
+    )
+    return {"steps": ["execute"], "findings": [text]}
 
 
 def respond(state: GojoState) -> dict:
@@ -239,6 +404,63 @@ async def run_locked(graph, message: str, thread_id: str) -> dict:
         return await run_turn(graph, message, thread_id)
 
 
+def gate_pending(snapshot) -> bool:
+    """Whether this thread is paused at the approval gate.
+
+    ⚠ Keyed on snapshot.next AND snapshot.interrupts, never interrupts
+    alone: any aupdate_state with values (e.g. /compact) empties
+    snapshot.interrupts while the gate stays fully resumable - verified
+    against langgraph 1.2.10 (ADR 0011, review M1).
+    """
+    return "gate" in (snapshot.next or ()) or bool(snapshot.interrupts)
+
+
+async def resume_gate(graph, decision: str, thread_id: str) -> dict:
+    """Resume a paused gate with the owner's decision. Same 9.3 guards.
+
+    Command(resume=...) re-enters the gate node from its start; interrupt()
+    then returns `decision` instead of raising.
+
+    Raises:
+        GraphTimeout: the resumed turn exceeded graph_timeout_seconds.
+    """
+    settings = get_settings()
+    config = {
+        "configurable": {"thread_id": thread_id},
+        "recursion_limit": settings.recursion_limit,
+    }
+    try:
+        return await asyncio.wait_for(
+            graph.ainvoke(Command(resume=decision), config),
+            timeout=settings.graph_timeout_seconds,
+        )
+    except TimeoutError as exc:
+        logger.error(
+            "gate resume timed out after %ss on thread %s",
+            settings.graph_timeout_seconds,
+            thread_id,
+        )
+        raise GraphTimeout(
+            f"gate resume exceeded {settings.graph_timeout_seconds}s"
+        ) from exc
+
+
+async def resume_gate_locked(graph, decision: str, thread_id: str) -> dict | None:
+    """resume_gate under the conversation's lock, with the pending re-check.
+
+    Returns None when no gate is pending - the B1 defence: a double card
+    tap, or a resume racing a cancellation, must be refused rather than
+    silently replaying the thread's previous final state (which is what
+    Command(resume=...) does on a non-paused thread - verified 1.2.10).
+    """
+    async with lock_for(thread_id):
+        snapshot = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+        if not gate_pending(snapshot):
+            logger.info("gate resume refused - nothing pending on thread %s", thread_id)
+            return None
+        return await resume_gate(graph, decision, thread_id)
+
+
 def build_graph(checkpointer=None):
     """Assemble and compile the orchestrator graph.
 
@@ -253,6 +475,8 @@ def build_graph(checkpointer=None):
     builder.add_node("classify", classify)
     builder.add_node("megumi", megumi)
     builder.add_node("sukuna", sukuna)
+    builder.add_node("gate", gate)
+    builder.add_node("execute", execute_action)
     builder.add_node("respond", respond)
 
     builder.add_edge(START, "new_turn")
@@ -263,19 +487,27 @@ def build_graph(checkpointer=None):
         {"gather": "megumi", "act": "sukuna", "unknown": "respond"},
     )
     builder.add_edge("megumi", "respond")
-    builder.add_edge("sukuna", "respond")
+    builder.add_conditional_edges(
+        "sukuna", route_after_sukuna, {"gate": "gate", "respond": "respond"}
+    )
+    builder.add_conditional_edges(
+        "gate", route_after_gate, {"execute": "execute", "respond": "respond"}
+    )
+    builder.add_edge("execute", "respond")
     builder.add_edge("respond", END)
 
     return builder.compile(checkpointer=checkpointer)
 
 
 async def main() -> None:
+    # Gather-path demo only: the act path now pauses at the gate, which
+    # needs a checkpointer to hold the interrupt - use /chat or Teams.
     graph = build_graph()
-    for msg in ["what needs my attention today", "send a reply to Dave"]:
-        print(f"\n--- {msg} ---")
-        result = await graph.ainvoke({"message": msg, "steps": [], "findings": []})
-        print("REPLY:", result["reply"])
-        print("PATH:", result["steps"])
+    msg = "what needs my attention today"
+    print(f"\n--- {msg} ---")
+    result = await graph.ainvoke({"message": msg, "steps": [], "findings": []})
+    print("REPLY:", result["reply"])
+    print("PATH:", result["steps"])
 
 
 if __name__ == "__main__":
