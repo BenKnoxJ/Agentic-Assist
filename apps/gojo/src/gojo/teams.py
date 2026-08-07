@@ -24,7 +24,9 @@ and validating the right one (5.2).
 
 import asyncio
 import logging
+from dataclasses import dataclass
 
+from langgraph.graph import END
 from microsoft_agents.activity import (
     Activity,
     ActivityTypes,
@@ -39,16 +41,32 @@ from microsoft_agents.hosting.core import (
     TurnState,
 )
 
-from gojo import outbox
+from gojo import actions, outbox
+from gojo.approval import build_card, parse_decision, render_prompt
 from gojo.commands import handle as handle_command
 from gojo.commands import is_command
 from gojo.logs import new_turn_id
-from gojo.orchestrator import GraphTimeout, run_locked
+from gojo.orchestrator import (
+    GraphTimeout,
+    gate_pending,
+    lock_for,
+    resume_gate_locked,
+    run_locked,
+)
 
 logger = logging.getLogger(__name__)
 
 ACK = "On it — give me a moment."
 REFUSAL = "This assistant is private and isn't available to you."
+
+NO_LONGER_PENDING = "That action is no longer pending — nothing was done."
+STALE_CARD = (
+    "That approval button belongs to an earlier action — nothing was done. "
+    "The current pending action is above."
+)
+CANCELLED_NOTICE = "Discarded the pending action — nothing was done."
+
+CARD_CONTENT_TYPE = "application/vnd.microsoft.card.adaptive"
 
 # Module-level so recovery.py imports it rather than keeping a second copy. A
 # recovered turn that cannot be finished should read like any other failed
@@ -95,10 +113,113 @@ def _track(task: asyncio.Task) -> None:
     task.add_done_callback(_in_flight.discard)
 
 
+@dataclass(frozen=True)
+class Outcome:
+    """What a turn produced: text always (Teams needs a fallback and an
+    empty message 400s), a card only for approval prompts."""
+
+    text: str
+    card: dict | None = None
+
+
+@dataclass(frozen=True)
+class GateTraffic:
+    """What a message arriving on a possibly-paused thread turned out to be.
+
+    kind: "none" (no gate involved - handle normally), "notice" (send text,
+    stop), "cancelled" (send text, then handle the message normally),
+    "resume" (resume the gate with .decision).
+    """
+
+    kind: str
+    text: str = ""
+    decision: str = ""
+
+
+async def assess_gate_traffic(
+    graph, activity_value: dict | None, message: str, thread_id: str
+) -> GateTraffic:
+    """The lock-critical approval section (ADR 0011, review B1).
+
+    Everything that must be atomic happens inside the conversation's lock:
+    detecting the paused gate (keyed on snapshot.next - interrupts go blind
+    after any state update, M1), parsing the decision against the pending
+    action_id, marking the ledger, and cancellation (END escape hatch +
+    ledger row). The resume itself deliberately happens AFTER the lock is
+    released - resume_gate_locked re-checks pending under its own
+    acquisition, which is what makes a double tap safe.
+    """
+    async with lock_for(thread_id):
+        snapshot = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+        if not gate_pending(snapshot):
+            if activity_value:
+                # A tap on a card whose action is finished. Never let it
+                # fall through - empty text would become a graph turn.
+                return GateTraffic("notice", NO_LONGER_PENDING)
+            return GateTraffic("none")
+
+        proposal = (snapshot.values or {}).get("proposal") or {}
+        action_id = proposal.get("action_id", "")
+        decision = parse_decision(activity_value, message, action_id)
+        conn = actions.connection()
+
+        if decision is None:
+            return GateTraffic("notice", STALE_CARD)
+
+        if decision == "cancel":
+            # Fully in-lock: abandon the pending task cleanly, cancel the
+            # ledger row, and only then let the message continue as a
+            # normal turn. Loud on purpose.
+            await graph.aupdate_state(
+                {"configurable": {"thread_id": thread_id}}, None, as_node=END
+            )
+            if conn is not None:
+                await actions.cancel_thread(conn, thread_id)
+            logger.info("gate cancelled on thread %s action_id=%s", thread_id, action_id)
+            return GateTraffic("cancelled" if message else "notice", CANCELLED_NOTICE)
+
+        if conn is not None and action_id:
+            await actions.mark(
+                conn, action_id, "approved" if decision == "approve" else "declined"
+            )
+        logger.info("gate decision=%s action_id=%s recorded", decision, action_id)
+        return GateTraffic("resume", decision=decision)
+
+
+def outcome_from_result(result: dict) -> Outcome:
+    """Translate a graph result into what Teams should show.
+
+    A result carrying "__interrupt__" (a list - langgraph 1.2.10) is a
+    paused gate: the reply is the approval prompt, exact payload verbatim,
+    with the card as decoration and the text as the always-wired fallback.
+    """
+    interrupts = result.get("__interrupt__")
+    if interrupts:
+        value = interrupts[0].value
+        return Outcome(text=render_prompt(value), card=build_card(value))
+    return Outcome(text=result.get("reply") or FAILED)
+
+
+def _as_sendable(outcome: Outcome):
+    if outcome.card is None:
+        return outcome.text
+    return Activity(
+        type=ActivityTypes.message,
+        text=outcome.text,
+        attachments=[
+            Attachment(content_type=CARD_CONTENT_TYPE, content=outcome.card)
+        ],
+    )
+
+
 async def deliver_reply(
-    adapter, agent_id: str, reference: ConversationReference, text: str
+    adapter,
+    agent_id: str,
+    reference: ConversationReference,
+    text: str,
+    card: dict | None = None,
 ) -> bool:
-    """Send `text` back into an existing conversation. Returns True on success.
+    """Send a reply back into an existing conversation. Returns True on success.
 
     ⚠ Pass a continuation **Activity**, not the ConversationReference itself.
     ChannelAdapter.continue_conversation takes a reference and converts it, but
@@ -110,7 +231,7 @@ async def deliver_reply(
     """
 
     async def _send(context: TurnContext) -> None:
-        await context.send_activity(text)
+        await context.send_activity(_as_sendable(Outcome(text=text, card=card)))
 
     try:
         await adapter.continue_conversation(
@@ -199,7 +320,7 @@ def build_agent_app(
         connection_manager=connections,
     )
 
-    async def _run_graph(message: str, thread_id: str) -> str:
+    async def _run_graph(message: str, thread_id: str) -> Outcome:
         """Run one turn. Never raises - a failure becomes a reply.
 
         thread_id is the Teams conversation id, so state and the agent's
@@ -210,12 +331,10 @@ def build_agent_app(
         fork its checkpoint history, and the losing line's writes vanish.
         """
         try:
-            result = await run_locked(graph, message, thread_id)
-            # Belt to respond's braces: an empty message 400s at the channel.
-            return result["reply"] or FAILED
+            return outcome_from_result(await run_locked(graph, message, thread_id))
         except GraphTimeout:
             logger.error("turn timed out on thread %s", thread_id)
-            return (
+            return Outcome(
                 "That took too long and I stopped it. Nothing was changed - "
                 "try a narrower question."
             )
@@ -223,13 +342,38 @@ def build_agent_app(
             # 10.4: a dead upstream degrades the answer, it does not kill the
             # process. The user gets told rather than left waiting forever.
             logger.exception("graph failed for a Teams turn")
-            return FAILED
+            return Outcome(FAILED)
+
+    async def _run_resume(decision: str, thread_id: str) -> Outcome:
+        """Resume a paused gate. Never raises.
+
+        resume_gate_locked returning None means the gate vanished between
+        our lock section and this one (a cancellation or double tap won the
+        race) - refused, not replayed (B1).
+        """
+        try:
+            result = await resume_gate_locked(graph, decision, thread_id)
+        except GraphTimeout:
+            logger.error("gate resume timed out on thread %s", thread_id)
+            return Outcome(
+                "That took too long and I stopped it. Check the action "
+                "ledger before approving again."
+            )
+        except Exception:
+            logger.exception("gate resume failed on thread %s", thread_id)
+            return Outcome(FAILED)
+        if result is None:
+            return Outcome(NO_LONGER_PENDING)
+        return outcome_from_result(result)
 
     async def _deliver_when_done(
         task: asyncio.Task, reference: ConversationReference, turn_id: str
     ) -> None:
         """Wait for a slow turn, send its answer, and settle the debt."""
-        delivered = await deliver_reply(adapter, agent_id, reference, await task)
+        outcome = await task
+        delivered = await deliver_reply(
+            adapter, agent_id, reference, outcome.text, outcome.card
+        )
         await settle_debt(outbox_conn, turn_id, delivered=delivered)
 
     @app.activity(ActivityTypes.message)
@@ -257,74 +401,25 @@ def build_agent_app(
 
         message = (context.activity.text or "").strip()
         thread_id = context.activity.conversation.id
+        value = context.activity.value
 
-        # --- TEMPORARY: step-5 T1 card spike. Removed once the submit payload
-        # shape is recorded as the T7 test fixture (build-log Session 6).
-        if context.activity.value:
-            logger.info(
-                "SPIKE submit: value=%r text=%r channel_data=%r",
-                context.activity.value,
-                context.activity.text,
-                context.activity.channel_data,
-            )
-            await context.send_activity(
-                f"Card submit received. value={context.activity.value!r}"
-            )
-            return True
-        if message.startswith("/cardspike"):
-            parts = message.split()
-            version = parts[1] if len(parts) > 1 else "1.5"
-            card = {
-                "type": "AdaptiveCard",
-                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                "version": version,
-                "body": [
-                    {
-                        "type": "TextBlock",
-                        "text": f"Card spike — schema {version}",
-                        "weight": "Bolder",
-                        "wrap": True,
-                    },
-                    {
-                        "type": "TextBlock",
-                        "text": "If this renders and the buttons work, tap one.",
-                        "wrap": True,
-                    },
-                ],
-                "actions": [
-                    {
-                        "type": "Action.Submit",
-                        "title": "Approve",
-                        "data": {"gojo_action": "approve", "action_id": f"spike-{version}"},
-                    },
-                    {
-                        "type": "Action.Submit",
-                        "title": "Reject",
-                        "data": {"gojo_action": "reject", "action_id": f"spike-{version}"},
-                    },
-                ],
-            }
-            await context.send_activity(
-                Activity(
-                    type=ActivityTypes.message,
-                    attachments=[
-                        Attachment(
-                            content_type="application/vnd.microsoft.card.adaptive",
-                            content=card,
-                        )
-                    ],
-                )
-            )
-            return True
-        # --- end TEMPORARY spike ---
-
-        # Commands are answered on this turn and never reach an agent. They
-        # are fast, so there is no acknowledgement and no proactive delivery.
-        if is_command(message):
+        # A card tap is never a command and never a normal turn - it routes
+        # purely through the gate logic. Text goes to commands FIRST so /new
+        # and /compact keep their own gate-aware handling rather than being
+        # read as a cancellation.
+        if not value and is_command(message):
             await context.send_activity(
                 await handle_command(graph, message, thread_id, outbox_conn)
             )
             return True
+
+        traffic = await assess_gate_traffic(graph, value, message, thread_id)
+        if traffic.kind == "notice":
+            await context.send_activity(traffic.text)
+            return True
+        if traffic.kind == "cancelled":
+            # Loud, then the message continues as a normal turn below.
+            await context.send_activity(traffic.text)
 
         # Captured before returning: once this turn ends the context is gone,
         # and the reference is the only way back to this conversation.
@@ -336,7 +431,15 @@ def build_agent_app(
         await context.send_activity(Activity(type=ActivityTypes.typing))
 
         started = asyncio.get_running_loop().time()
-        task = asyncio.create_task(_run_graph(message, thread_id))
+        if traffic.kind == "resume":
+            task = asyncio.create_task(_run_resume(traffic.decision, thread_id))
+            # B2: an approved action must never vanish silently. The debt row
+            # goes down BEFORE the resume attempt - even though execution is
+            # one HTTP call and will usually beat the fast-reply budget - so
+            # a crash mid-execute leaves recovery something to find.
+            await note_debt(outbox_conn, turn, thread_id, reference.model_dump_json())
+        else:
+            task = asyncio.create_task(_run_graph(message, thread_id))
         _track(task)
 
         # Spend part of Azure Bot Service's response window waiting. If the
@@ -346,7 +449,11 @@ def build_agent_app(
         elapsed = asyncio.get_running_loop().time() - started
         if task in done:
             logger.info("turn fast path: %.1fs (budget %.1fs)", elapsed, fast_reply_seconds)
-            await context.send_activity(task.result())
+            await context.send_activity(_as_sendable(task.result()))
+            if traffic.kind == "resume":
+                # The resume path always records debt (above); a delivered
+                # fast-path answer settles it immediately.
+                await settle_debt(outbox_conn, turn, delivered=True)
             return True
 
         # Slow turn: say so, return before the channel times out, and deliver
@@ -359,8 +466,10 @@ def build_agent_app(
         # The acknowledgement creates the debt (ADR 0008), so the row goes down
         # before it. `turn` is the whole identity: recovery matches it against
         # the turn id the graph stamped into state, which is stable while this
-        # turn runs and changes when the next one starts.
-        await note_debt(outbox_conn, turn, thread_id, reference.model_dump_json())
+        # turn runs and changes when the next one starts. (Resume turns
+        # recorded theirs already, before the attempt - B2.)
+        if traffic.kind != "resume":
+            await note_debt(outbox_conn, turn, thread_id, reference.model_dump_json())
         await context.send_activity(ACK)
         _track(asyncio.create_task(_deliver_when_done(task, reference, turn)))
         return True
