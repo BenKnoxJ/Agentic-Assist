@@ -1,7 +1,7 @@
 # Gojo — Master Document
 
-**Version:** 3.5 — build in progress
-**Date:** 5 August 2026
+**Version:** 3.6 — build in progress
+**Date:** 7 August 2026
 **Owner:** Ben Knox (GitHub: `BenKnoxJ`)
 **Repo:** `BenKnoxJ/Agentic-Assist` (private monorepo)
 **Package:** `gojo` (repo carries the portfolio-facing name; the Python package stays `gojo`)
@@ -13,6 +13,8 @@
 > **What changed in v3.2:** memory promoted from a folder of markdown to a **three-layer architecture** (§9.1), and retrieval moved from *deferred* to **committed and sequenced as build step 6** (§12) — Postgres 17 + pgvector + Voyage. §13 item 1 answered by measurement. §18 added to stop document drift.
 >
 > **What changed in v3.3:** **build step 2 is complete** — Gojo answers from Teams on a phone, behind JWT validation and a single-user allow-list. **Steps 3 and 4 are swapped** (ADR 0007): persistence, sessions and systemd now come before connectors, because using the system showed continuity and surviving a restart matter before tenant-wide mail permissions do.
+>
+> **What changed in v3.6:** **build step 4 is complete** — Graph mail + Jira read connectors behind RBAC-scoped permissions (`Mail.Read` proven scoped to one mailbox by a recorded negative test, never tenant-wide), an in-process MCP tool layer with explicit built-in denial, `docs/THREAT-MODEL.md` (fifth owned document, §18), and the LangSmith reasoning span (§13 item 8 answered). Two things live use found on day one: "find Amy's email" needed mailbox *search*, built same-day; and **the service had never traced** — systemd's `EnvironmentFile` beats `Environment=`, so tracing was silently off in production since first boot (§9.2, fixed). The one-sentence test (§1.1) passed on real work.
 >
 > **What changed in v3.5:** the in-flight gap is **closed** — ADR 0008 built and verified on the box (an acknowledged turn killed mid-agent-call was resumed and delivered by the next process). Its four review rounds exposed the root cause as a live defect, settled as **ADR 0009**: all graph operations on a conversation are now serialised, which also fixed `/new` being silently reverted when racing an in-flight turn. Two further live bugs found by the acceptance run: an empty agent answer became an empty Teams message (400), and megumi's `max_turns=1` silenced every resumed session.
 >
@@ -321,7 +323,7 @@ The other nine are a **backlog**, added when a workflow you actually run needs o
 
 **Application permissions, not delegated.** Reason: the proactive morning digest fires at 07:00 with nobody present. There's no supported way to mint a delegated token with zero user interaction — ROPC is discouraged and breaks with MFA, and persisted refresh tokens decay on password change, admin revocation, policy change, or 90 days' inactivity.
 
-**Library:** MSAL Python, `ConfidentialClientApplication`, `acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])`. Encrypted `SerializableTokenCache`, loaded at start, re-serialised after acquisition.
+**Library:** MSAL Python, `ConfidentialClientApplication`, `acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])`. Token cache is **in-memory, not the encrypted `SerializableTokenCache` this section originally specified** — one always-on process re-mints a client-credentials token in a single call, and an on-disk cache adds a secret at rest for nothing. ADR 0010.
 
 **Note:** in app-only mode `/me/messages` is invalid. Use `GET /users/{ownerUPN}/messages`.
 
@@ -474,7 +476,7 @@ Six properties, deliberately no more. This exists to stop scope creep dressed as
 
 **At step 5 you have a complete, production-grade system you use every day.** Then you use it for a fortnight and let real gaps drive what comes next. **Step 6 is committed, not speculative** — but it is deliberately last, because it needs a corpus that steps 2–5 produce. See §12.
 
-### 11.0 Current position — steps 1–3 complete, step 4 next
+### 11.0 Current position — steps 1–4 complete, step 5 next
 
 | Piece | State |
 |---|---|
@@ -495,15 +497,25 @@ Six properties, deliberately no more. This exists to stop scope creep dressed as
 | **README** | ✅ Problem, architecture, decisions and honest gaps (§16) |
 | In-flight turn resumption | ✅ Outbox + turn-id guard + startup recovery (ADR 0008). Verified live: killed mid-agent-call at the ACK, answer delivered by the next process 6s later; row settles on delivery (no duplicate); `/new` drops owed rows |
 | Per-conversation serialisation | ✅ One lock per thread — live turns, `/chat`, commands, recovery (ADR 0009). Verified live when Teams split a message and the two turns queued cleanly |
+| **Exchange RBAC mailbox scoping** | ✅ Granted 7 Aug via RBAC for Applications, nothing in Entra. Positive `InScope: True` (owner) and negative `InScope: False` (real colleague) recorded verbatim — build-log Session 5 |
+| Graph mail connector | ✅ `gojo-graph`: app-only MSAL on a thread, recent-window list + KQL `search_mail` over the whole mailbox, capped/reduced fields, MockTransport tests |
+| Jira connector | ✅ `gojo-jira`: delegated basic auth, `/rest/api/3/search/jql`, bounded-query rule taught in the tool description after failing live |
+| Gather tool layer | ✅ In-process MCP server (ADR 0010): built-ins explicitly denied, `strict_mcp_config`, `<external-data>` wrapping, tool-free `/compact`, content-free tool logs |
+| THREAT-MODEL.md | ✅ Six trust boundaries, containment argument, control→evidence table. Live evidence in: negative RBAC test, Teams `ls`-probe refusal (7 Aug) |
+| LangSmith reasoning span | ✅ `claude-agent-sdk` child under agent nodes with cost/turns/session-id, measured live. §13 item 8 answered |
+| Service tracing | ✅ Restored 7 Aug — it had **never** worked (`EnvironmentFile` beats `Environment=`; §9.2). `.env` owns the flag now |
+| §1.1 sentence test | ✅ Passed on real work: the Rowntree/Amy answer assembled mail + five Jira tickets, flagged the stalled hand-off, and declared what it had no tools to check |
 
 **Outstanding debt from v3.1: cleared.** ADR 0004 written, this document moved to `docs/`, `build-log.md` current to 4 August, `setting_sources=[]` applied.
 
 **Carried debt from step 3: cleared.** All five items closed on 4 August 2026 — explicit `recursion_limit` plus a state budget field, a wall-clock timeout on graph invocation, structured logging with per-turn ids, the README, and `runner.py` on `ClaudeSDKClient`. Covered by `test_guards.py`.
 
-**Open — carry into step 4:** none. The last item — backing up
-`checkpoints/gojo.sqlite` — closed 5 Aug 2026: daily online snapshot with
-integrity check and 14-copy rotation ([VPS.md](VPS.md) has the mechanism and
-its honest limitation).
+**Open — carry into step 5:**
+- The §13 item 9 decision (routed `classify` vs `can_use_tool` gating) is due now — the gate is what step 5 builds.
+- ADR 0010's inherited obligation: recovery replay is only idempotent while tools are read-only; write tools need idempotency keys before they exist.
+- THREAT-MODEL.md §7: re-argue the containment case before granting `Mail.Send`.
+- Small: whether `@traceable` on tool bodies nests tool spans under the SDK span (§13 item 8 residue).
+- Owner-stated target workflows for the backlog (7 Aug): full-historic "what have I missed" sweeps, per-customer comms summaries documented — these drive calendar/SharePoint/Teams-message connectors (§8.2) and step 6 retrieval. Teams chat reading needs Microsoft's protected-API approval — submit early, it is calendar time. `Files.Read.All` stays refused until scopable (§8.4).
 
 **Repo layout as built:**
 
@@ -692,4 +704,4 @@ Five artifacts now describe this project. Without a rule they drift — and they
 
 ---
 
-**Next action:** build step 4. Run `infra/graph-mail-rbac.ps1` — needs Exchange Administrator via PIM — and confirm the **negative** scoping test returns `InScope: False` for another mailbox. Then build the Graph mail connector as Agent SDK `@tool` functions given to Megumi. **Do not grant `Mail.Read` in Entra** (§8.4).
+**Next action:** build step 5 — the approval gate and write scopes. Decide §13 item 9 first (routed `classify` vs `can_use_tool` — the gate's shape depends on it), then `interrupt()` + `Command(resume=...)` in the graph, a separate write-tool server for Sukuna, idempotency keys (ADR 0010's inherited obligation), and only then the `Mail.Send` RBAC grant — same one-mailbox scoping as read, and THREAT-MODEL.md §7 must be re-argued before the grant exists. Owner's staging preference: draft-creation (writes to Drafts, owner sends manually) is an acceptable first rung before send-with-approval.

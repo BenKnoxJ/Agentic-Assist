@@ -86,12 +86,19 @@ along with `.env.*`. Never in the repo, never in the journal.
 
 | Key | Purpose |
 |---|---|
-| `LANGSMITH_*` | Tracing, EU region |
+| `LANGSMITH_*` | Tracing, EU region. ⚠ `LANGSMITH_TRACING` here is what the *service* runs with — `EnvironmentFile` beats the unit's `Environment=` (build-log Session 5). Keep it `true` |
 | `TEAMS_CLIENT_ID` / `TEAMS_TENANT_ID` / `TEAMS_CLIENT_SECRET` | Bot auth |
 | `ALLOWED_USER_IDS` | Entra object IDs permitted to use Gojo |
+| `GRAPH_CLIENT_ID` / `GRAPH_TENANT_ID` / `GRAPH_CLIENT_SECRET` / `GRAPH_OWNER_UPN` | Mail connector, app-only. Mailbox scope lives in Exchange RBAC, not here |
+| `JIRA_BASE_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` | Jira connector, delegated as the owner |
 
 **Client secret expiry is a recorded liability** (§10 property 5). When it
 rotates, update `.env` and restart — nothing else changes.
+
+| Credential | Expiry | Revoke/rotate at |
+|---|---|---|
+| Teams/Graph client secret (shared app registration) | **~June 2027** | Entra → App registrations → benkn-gojo-agent-orchestrator → Certificates & secrets |
+| Jira API token `gojo` | none (revocable) | id.atlassian.com → Security → API tokens |
 
 ## State
 
