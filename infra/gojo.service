@@ -35,10 +35,13 @@ ExecStart=/home/ccuser/Agentic-Assist/.venv/bin/python -m gojo
 # Secrets stay on the host at 0600 and are never in the repo (ADR 0003).
 EnvironmentFile=/home/ccuser/Agentic-Assist/.env
 
-# Overrides the .env value on purpose. 9.2 makes LANGSMITH_TRACING=false
-# mandatory for local iteration, which would otherwise leave the service -
-# the only traffic actually worth tracing - untraced.
-Environment=LANGSMITH_TRACING=true
+# ⚠ Do NOT set Environment=LANGSMITH_TRACING here. systemd applies
+# EnvironmentFile AFTER Environment=, so the .env value wins - the original
+# Environment=true line was silently overridden by .env's false and the
+# service ran untraced from first boot to 7 Aug 2026 (build-log Session 5).
+# .env owns the flag now (true); local iteration stays untraced because dev
+# shells never load .env into the process environment - 9.2's
+# LANGSMITH_TRACING=false prefix on pytest is belt and braces.
 
 # 10.4: a crash must not take the assistant off the air. StartLimit stops a
 # genuinely broken build from hammering the box in a restart loop.
