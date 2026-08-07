@@ -117,6 +117,51 @@ async def test_unread_filter_repeats_orderby_property() -> None:
     assert seen["params"]["$orderby"] == "receivedDateTime desc"
 
 
+async def test_search_uses_kql_without_orderby() -> None:
+    """$search ranks by relevance and Graph rejects $orderby alongside it -
+    the URL shape is the contract here."""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["params"] = dict(request.url.params)
+        return graph_page([])
+
+    client = make_client(handler)
+    await client.search_messages("from:amy Rowntree")
+
+    params = seen["params"]
+    assert params["$search"] == '"from:amy Rowntree"'
+    assert "$orderby" not in params
+    assert params["$select"] == (
+        "subject,from,receivedDateTime,bodyPreview,isRead,importance,hasAttachments"
+    )
+    assert params["$top"] == "10"
+
+
+async def test_search_count_clamped_and_quotes_stripped() -> None:
+    """An embedded double-quote must not break out of the KQL string."""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["params"] = dict(request.url.params)
+        return graph_page([])
+
+    client = make_client(handler)
+    await client.search_messages('subject:"weekly" AND x', count=99)
+
+    assert seen["params"]["$top"] == "25"
+    assert '"' not in seen["params"]["$search"][1:-1]
+
+
+async def test_search_returns_reduced_messages() -> None:
+    client = make_client(lambda request: graph_page([SAMPLE_MESSAGE]))
+
+    messages = await client.search_messages("Rowntree")
+
+    assert messages[0]["subject"] == "Quarterly numbers"
+    assert messages[0]["from"] == "Dave Example <dave@example.com>"
+
+
 async def test_403_raises_graph_error_pointing_at_the_runbook() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(403, json={"error": {"code": "ErrorAccessDenied"}})

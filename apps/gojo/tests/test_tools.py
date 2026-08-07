@@ -24,11 +24,12 @@ class TestWrapping:
         assert wrapped.count("</external-data>") == 1
 
 
-def test_tool_names_are_the_qualified_pair() -> None:
+def test_tool_names_are_the_qualified_trio() -> None:
     """In-process MCP tools are named mcp__<server>__<tool>; megumi's
     allow-list and the server registration must agree on these strings."""
     assert GATHER_TOOL_NAMES == [
         "mcp__gather__list_recent_mail",
+        "mcp__gather__search_mail",
         "mcp__gather__search_issues",
     ]
 
@@ -38,9 +39,16 @@ class FakeGraphClient:
         self.messages = messages or []
         self.error = error
         self.called_with: tuple | None = None
+        self.searched_with: tuple | None = None
 
     async def list_recent_messages(self, count: int = 10, unread_only: bool = False):
         self.called_with = (count, unread_only)
+        if self.error:
+            raise self.error
+        return self.messages
+
+    async def search_messages(self, query: str, count: int = 10):
+        self.searched_with = (query, count)
         if self.error:
             raise self.error
         return self.messages
@@ -99,6 +107,37 @@ class TestListRecentMail:
 
         assert result["is_error"] is True
         assert "403" in result["content"][0]["text"]
+
+
+class TestSearchMail:
+    async def test_wraps_results_and_passes_the_query(self, monkeypatch) -> None:
+        fake = FakeGraphClient(messages=[{"subject": "JRF - Insights360 update"}])
+        monkeypatch.setattr(tools, "_graph_client", lambda: fake)
+
+        result = await tools.search_mail.handler({"query": "from:amy Rowntree", "count": 5})
+
+        text = result["content"][0]["text"]
+        assert "JRF - Insights360 update" in text
+        assert '<external-data source="mail">' in text
+        assert fake.searched_with == ("from:amy Rowntree", 5)
+
+    async def test_empty_query_is_an_error_result(self, monkeypatch) -> None:
+        """Graph would 400 an empty $search; catch it before the network."""
+        fake = FakeGraphClient()
+        monkeypatch.setattr(tools, "_graph_client", lambda: fake)
+
+        result = await tools.search_mail.handler({"query": "   "})
+
+        assert result["is_error"] is True
+        assert fake.searched_with is None
+
+    async def test_unconfigured_is_an_error_result(self, monkeypatch) -> None:
+        monkeypatch.setattr(tools, "_graph_client", lambda: None)
+
+        result = await tools.search_mail.handler({"query": "Rowntree"})
+
+        assert result["is_error"] is True
+        assert "not configured" in result["content"][0]["text"]
 
 
 class TestSearchIssues:

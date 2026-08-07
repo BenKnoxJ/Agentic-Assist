@@ -95,6 +95,26 @@ class GraphMailClient:
         _raise_for_status(response)
         return [_reduce(message) for message in response.json().get("value", [])]
 
+    async def search_messages(self, query: str, count: int = 10) -> list[dict]:
+        """Search the owner's mailbox with KQL (from:, subject:, body:, plain
+        terms). Results are relevance-ranked: Graph rejects $orderby alongside
+        $search, so recency must be part of the query, not the sort."""
+        token = await self._token_getter()
+        params = {
+            # Embedded double-quotes would terminate the KQL string early.
+            "$search": '"' + query.replace('"', "") + '"',
+            "$select": SELECT_FIELDS,
+            "$top": str(min(max(count, 1), MAX_MESSAGES)),
+        }
+        async with httpx.AsyncClient(transport=self._transport, timeout=15.0) as http:
+            response = await http.get(
+                f"{GRAPH_BASE}/users/{self._owner_upn}/messages",
+                params=params,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        _raise_for_status(response)
+        return [_reduce(message) for message in response.json().get("value", [])]
+
     async def _msal_token(self) -> str:
         def acquire() -> dict:
             if self._msal_app is None:

@@ -91,9 +91,12 @@ def reset_clients() -> None:
 
 @tool(
     "list_recent_mail",
-    "Read recent messages from the owner's mailbox, newest first. Returns "
-    "subject, sender, received time, a short preview, read state, importance "
-    "and whether there are attachments. Read-only.",
+    "Read recent messages from the owner's mailbox, newest first - at most "
+    "25 per call, so this is a window onto the top of the inbox, not the "
+    "archive. To find specific messages, senders or topics beyond that "
+    "window, use search_mail instead. Returns subject, sender, received "
+    "time, a short preview, read state, importance and whether there are "
+    "attachments. Read-only.",
     {"count": int, "unread_only": bool},
 )
 async def list_recent_mail(args: dict) -> dict:
@@ -121,11 +124,47 @@ async def list_recent_mail(args: dict) -> dict:
 
 
 @tool(
+    "search_mail",
+    "Search the owner's whole mailbox (all history, all folders) with KQL: "
+    'plain terms, from:, subject:, body:, received:, e.g. "from:amy '
+    'Rowntree" or "subject:onboarding received:2026-07". Results are '
+    "relevance-ranked, not newest-first, at most 25 per call. Read-only.",
+    {"query": str, "count": int},
+)
+async def search_mail(args: dict) -> dict:
+    client = _graph_client()
+    if client is None:
+        return _error("The mail connector is not configured.")
+    query = str(args.get("query", "")).strip()
+    if not query:
+        return _error("search_mail needs a non-empty query.")
+    count = int(args.get("count", 10))
+    try:
+        messages = await client.search_messages(query, count=count)
+    except GraphError as exc:
+        logger.warning("search_mail failed: %s", exc)
+        return _error(str(exc))
+    logger.info(
+        "search_mail returned %d message(s) (query_chars=%d count=%d)",
+        len(messages),
+        len(query),
+        count,
+    )
+    return {
+        "content": [
+            {"type": "text", "text": wrap_external("mail", json.dumps(messages, indent=2))}
+        ]
+    }
+
+
+@tool(
     "search_issues",
     "Search Jira issues with a JQL query, authenticated as the owner - so "
     '"assignee = currentUser() AND statusCategory != Done ORDER BY updated '
-    'DESC" lists their open tickets. Returns key, summary, status, assignee, '
-    "priority, last update and issue type. Read-only.",
+    'DESC" lists their open tickets. The query must include at least one '
+    "restriction: Jira rejects unbounded queries like a bare ORDER BY. "
+    "Returns key, summary, status, assignee, priority, last update and "
+    "issue type. Read-only.",
     {"jql": str, "max_results": int},
 )
 async def search_issues(args: dict) -> dict:
@@ -152,11 +191,14 @@ async def search_issues(args: dict) -> dict:
     }
 
 
-GATHER_SERVER = create_sdk_mcp_server("gather", tools=[list_recent_mail, search_issues])
+GATHER_SERVER = create_sdk_mcp_server(
+    "gather", tools=[list_recent_mail, search_mail, search_issues]
+)
 
 # In-process MCP tools are addressed as mcp__<server>__<tool>; megumi's
 # allow-list must use exactly these strings.
 GATHER_TOOL_NAMES = [
     "mcp__gather__list_recent_mail",
+    "mcp__gather__search_mail",
     "mcp__gather__search_issues",
 ]
