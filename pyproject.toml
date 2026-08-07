@@ -12,7 +12,7 @@ target-version = "py312"
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["gojo"]
+known-first-party = ["gojo", "gojo_graph", "gojo_jira"]
 
 [tool.pytest.ini_options]
 testpaths = ["apps", "libs"]

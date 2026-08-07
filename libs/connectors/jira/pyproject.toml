@@ -1,0 +1,16 @@
+[project]
+name = "gojo-jira"
+version = "0.1.0"
+description = "Read-only Jira Cloud connector: fetches, never reasons"
+requires-python = ">=3.12"
+dependencies = [
+    # In the environment transitively; declared because imported first-party.
+    "httpx>=0.28",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gojo_jira"]

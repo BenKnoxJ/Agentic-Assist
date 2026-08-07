@@ -11,6 +11,8 @@ resolution-markers = [
 [manifest]
 members = [
     "gojo",
+    "gojo-graph",
+    "gojo-jira",
 ]
 
 [manifest.dependency-groups]
@@ -558,9 +560,12 @@ dependencies = [
     { name = "aiosqlite" },
     { name = "claude-agent-sdk" },
     { name = "fastapi" },
+    { name = "gojo-graph" },
+    { name = "gojo-jira" },
     { name = "langchain-core" },
     { name = "langgraph" },
     { name = "langgraph-checkpoint-sqlite" },
+    { name = "langsmith" },
     { name = "microsoft-agents-authentication-msal" },
     { name = "microsoft-agents-hosting-core" },
     { name = "microsoft-agents-hosting-fastapi" },
@@ -574,9 +579,12 @@ requires-dist = [
     { name = "aiosqlite", specifier = ">=0.22" },
     { name = "claude-agent-sdk", specifier = ">=0.2.128" },
     { name = "fastapi" },
+    { name = "gojo-graph", editable = "libs/connectors/graph" },
+    { name = "gojo-jira", editable = "libs/connectors/jira" },
     { name = "langchain-core", specifier = ">=1.2.22" },
     { name = "langgraph", specifier = ">=1.0.10" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.0.1" },
+    { name = "langsmith", specifier = ">=0.10" },
     { name = "microsoft-agents-authentication-msal", specifier = ">=1.3.0" },
     { name = "microsoft-agents-hosting-core", specifier = ">=1.3.0" },
     { name = "microsoft-agents-hosting-fastapi", specifier = ">=1.3.0" },
@@ -584,6 +592,32 @@ requires-dist = [
     { name = "pydantic-settings" },
     { name = "uvicorn", extras = ["standard"] },
 ]
+
+[[package]]
+name = "gojo-graph"
+version = "0.1.0"
+source = { editable = "libs/connectors/graph" }
+dependencies = [
+    { name = "httpx" },
+    { name = "msal" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.28" },
+    { name = "msal", specifier = ">=1.37" },
+]
+
+[[package]]
+name = "gojo-jira"
+version = "0.1.0"
+source = { editable = "libs/connectors/jira" }
+dependencies = [
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "httpx", specifier = ">=0.28" }]
 
 [[package]]
 name = "h11"
