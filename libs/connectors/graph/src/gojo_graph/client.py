@@ -23,8 +23,11 @@ SCOPES = ["https://graph.microsoft.com/.default"]
 
 # The $select list is the whole surface: nothing outside it enters the
 # agent's context. bodyPreview (~255 chars server-side) rather than body -
-# full bodies are a backlog tool, not a default (6.3 rule 3).
-SELECT_FIELDS = "subject,from,receivedDateTime,bodyPreview,isRead,importance,hasAttachments"
+# full bodies are a backlog tool, not a default (6.3 rule 3). `id` is opaque
+# and exists so a reply can name its target message (step 5); the gate then
+# verifies the target by fetching it with get_message, never by trusting
+# what an agent says about it.
+SELECT_FIELDS = "id,subject,from,receivedDateTime,bodyPreview,isRead,importance,hasAttachments"
 
 MAX_MESSAGES = 25
 
@@ -95,6 +98,19 @@ class GraphMailClient:
         _raise_for_status(response)
         return [_reduce(message) for message in response.json().get("value", [])]
 
+    async def get_message(self, message_id: str) -> dict:
+        """One message by id, reduced fields. The step-5 gate's deterministic
+        reply-target check: the human is shown what this returns."""
+        token = await self._token_getter()
+        async with httpx.AsyncClient(transport=self._transport, timeout=15.0) as http:
+            response = await http.get(
+                f"{GRAPH_BASE}/users/{self._owner_upn}/messages/{message_id}",
+                params={"$select": SELECT_FIELDS},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        _raise_for_status(response)
+        return _reduce(response.json())
+
     async def search_messages(self, query: str, count: int = 10) -> list[dict]:
         """Search the owner's mailbox with KQL (from:, subject:, body:, plain
         terms). Results are relevance-ranked: Graph rejects $orderby alongside
@@ -115,6 +131,66 @@ class GraphMailClient:
         _raise_for_status(response)
         return [_reduce(message) for message in response.json().get("value", [])]
 
+    # Write surface (step 5). These are only ever called by the deterministic
+    # execute path AFTER human approval - no agent holds them as tools. The
+    # payloads are the approved bytes, replayed verbatim (ADR 0011).
+
+    async def create_draft(self, to: list[str], subject: str, body: str) -> str:
+        """Create a draft in the owner's Drafts folder. Returns its id."""
+        payload = {
+            "subject": subject,
+            "body": {"contentType": "text", "content": body},
+            "toRecipients": [{"emailAddress": {"address": address}} for address in to],
+        }
+        response = await self._post(f"/users/{self._owner_upn}/messages", payload)
+        _raise_for_status(response, write=True)
+        return response.json()["id"]
+
+    async def create_reply_draft(self, message_id: str, body: str) -> str:
+        """Create a threaded reply draft to an existing message. Returns its id.
+
+        Two calls: createReply mints the draft with the quoted thread below,
+        then a PATCH sets our body. Whether createReply's own `comment` field
+        could do this in one call is a live-verify item - the PATCH shape is
+        the one pinned by tests.
+        """
+        response = await self._post(
+            f"/users/{self._owner_upn}/messages/{message_id}/createReply", {}
+        )
+        _raise_for_status(response, write=True)
+        draft_id = response.json()["id"]
+
+        token = await self._token_getter()
+        async with httpx.AsyncClient(transport=self._transport, timeout=15.0) as http:
+            patched = await http.patch(
+                f"{GRAPH_BASE}/users/{self._owner_upn}/messages/{draft_id}",
+                json={"body": {"contentType": "text", "content": body}},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        _raise_for_status(patched, write=True)
+        return draft_id
+
+    async def send_draft(self, message_id: str) -> None:
+        """Send an existing draft. 202 with an empty body on success.
+
+        Sending by id is what makes the step-5 replay story hold: a crash
+        replay re-sends the SAME draft, which Graph refuses once sent -
+        never a second copy (ADR 0011).
+        """
+        response = await self._post(
+            f"/users/{self._owner_upn}/messages/{message_id}/send", None
+        )
+        _raise_for_status(response, write=True)
+
+    async def _post(self, path: str, payload: dict | None) -> httpx.Response:
+        token = await self._token_getter()
+        async with httpx.AsyncClient(transport=self._transport, timeout=15.0) as http:
+            return await http.post(
+                f"{GRAPH_BASE}{path}",
+                json=payload,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
     async def _msal_token(self) -> str:
         def acquire() -> dict:
             if self._msal_app is None:
@@ -128,14 +204,19 @@ class GraphMailClient:
         return token_from_msal_result(await asyncio.to_thread(acquire))
 
 
-def _raise_for_status(response: httpx.Response) -> None:
+def _raise_for_status(response: httpx.Response, write: bool = False) -> None:
     if response.is_success:
         return
     if response.status_code == 403:
+        role = (
+            "Application Mail.ReadWrite / Mail.Send (write path)"
+            if write
+            else "Application Mail.Read"
+        )
         raise GraphError(
-            "Graph returned 403 for the owner's mailbox. Either the RBAC "
-            "scoping is missing or its cache (30min-2h) has not caught up - "
-            "see infra/graph-mail-rbac.ps1."
+            f"Graph returned 403 for the owner's mailbox. Either the {role} "
+            "RBAC grant is missing or its cache (30min-2h) has not caught up "
+            "- see infra/graph-mail-rbac.ps1."
         )
     if response.status_code == 429:
         retry_after = response.headers.get("Retry-After", "unknown")
@@ -152,6 +233,7 @@ def _reduce(message: dict) -> dict:
     if sender:
         sender_text = f"{sender.get('name', '')} <{sender.get('address', '')}>".strip()
     return {
+        "id": message.get("id", ""),
         "subject": message.get("subject", ""),
         "from": sender_text,
         "receivedDateTime": message.get("receivedDateTime", ""),
