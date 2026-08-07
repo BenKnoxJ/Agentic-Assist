@@ -118,7 +118,7 @@ because:
 | A1/A2: injected instructions | B6 wrapping + tool-free `/compact` + system-prompt rule | `agents/tools.py`, `agents/megumi.py`, `commands.py` | `test_tools.py` (wrapping, tag-strip), `test_megumi.py`, `test_commands.py` |
 | A1: injection → action | Built-ins denied; allow-list; strict MCP config | `agents/runner.py` | `test_runner_options.py`; live probe ("run `ls`" → refusal) — **pending, build-log Session 5** |
 | A1: injection → exfiltration | WebFetch/WebSearch in the denial list; only egress is the answer to the owner | `agents/runner.py` | `test_runner_options.py` |
-| A3: leaked app secret reads colleagues' mail | Exchange RBAC scope, no Entra grant | `infra/graph-mail-rbac.ps1` | Negative scoping test output — **pending, build-log Session 5** |
+| A3: leaked app secret reads colleagues' mail | Exchange RBAC scope, no Entra grant | `infra/graph-mail-rbac.ps1` | build-log Session 5 §3: owner `InScope: True`, real colleague `InScope: False`, recorded verbatim 7 Aug 2026 |
 | A3: leaked Jira token | Delegated token, owner-revocable, read-only usage | `libs/connectors/jira` | Token scope is Atlassian-side; revocation runbook in VPS.md |
 | Secrets at rest | `.env` 0600, gitignored, never logged; SecretStr | ADR 0003, `config.py` | `test_config.py` (repr leak test) |
 | Billing hijack via env var | `ANTHROPIC_API_KEY` rejected at startup | `config.py` | `test_config.py` guard tests |

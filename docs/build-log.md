@@ -151,3 +151,36 @@ Steps 1-3 complete · 46 tests · Teams live behind JWT + single-user allow-list
 Steps 1-3 remain complete, hardened · 87 tests · in-flight turns survive restarts, verified live · per-conversation serialisation (ADR 0009) fixing a live /new race · empty-answer and max_turns=1 bugs fixed · tests no longer touch the production DB · ADRs 0008-0009 · four review rounds recorded, including the reviews' own wrong turns.
 
 **Next session:** build step 4 — run `infra/graph-mail-rbac.ps1` (Exchange Administrator via PIM), verify the negative scoping test, then the Graph mail connector as SDK `@tool` functions.
+
+## Session 5 — Step 4: read connectors, RBAC scoping, threat model
+
+**Date:** 2026-08-07
+**Goal:** Build step 4 (Graph mail + Jira read connectors behind RBAC-scoped permissions) plus two agreed extras: THREAT-MODEL.md and the LangSmith reasoning span. Sequenced so the security narrative is complete early — Snyk interview in 5 days uses Gojo as its centrepiece.
+**Outcome:** In progress. Build half done and pushed before the RBAC session; scoping granted and proven both ways on the live tenant.
+
+### 1. Plan and review before any code
+- Full plan drafted from GOJO-MASTER v3.5, then an unprimed adversarial review (standing practice). Verdict "executable with fixes"; two majors both sat on the security story: the threat model's draft claim "no write tool exists in the process" was **false** — the SDK subprocess ships Claude Code's built-ins, merely default-denied — and `/compact` laundered untrusted mail content past the data wrapper into the next session's bare prompt. Both fixed in design before implementation. Also caught: Graph's orderby-in-filter constraint, a client-singleton test-isolation hazard, MSAL's error-dict (not exception) contract.
+
+### 2. Build — TDD throughout, 133 tests, pushed as five commits
+- `gojo-graph` and `gojo-jira` workspace packages: thin, SDK-free, httpx; reduced field sets are the whole surface. Graph: MSAL client-credentials on a thread, `/users/{upn}/messages`, `bodyPreview` only. Jira: delegated basic auth, `/rest/api/3/search/jql` (old `/search` is gone), 400s surface Jira's own JQL diagnosis.
+- Gather tool layer: one in-process MCP server (ADR 0010), `mcp__gather__list_recent_mail` + `mcp__gather__search_issues`. Runner: explicit `disallowed_tools` for every CLI built-in, `strict_mcp_config=True`, `mcp_servers` param. All fetched content wrapped as `<external-data>` (closing tag stripped); `/compact` summarises tool-free and re-wraps its summary; tool logs carry counts/shapes, never content.
+- LangSmith span around the SDK exchange (13.8 first half) — cost/turns/session-id will show as a child of agent nodes; live trace shape still to be measured.
+- **Gotcha:** two connector test files named `test_client.py` with no package `__init__` collide in pytest collection — renamed to unique basenames.
+- docs: THREAT-MODEL.md (assets, six boundaries, containment argument, control→evidence table), ADR 0010, fifth row in §18.
+
+### 3. RBAC for Applications — granted and proven, live tenant
+- **Gotcha (live):** the runbook carried the App registration's Object ID where the service principal's was needed; `New-ServicePrincipal` failed loud with `AADServicePrincipalNotFound`. Correct value comes from the Enterprise application page (App registration → Overview → "Managed application in local directory"). Runbook fixed: SP Object ID is `ad389ad2-5beb-4738-aa36-92052bc365e8`.
+- Grant sequence ran clean under Global Administrator via PIM (confirmed sufficient — GA maps to Organization Management, which holds Role Management). Nothing granted in Entra.
+- **Evidence — positive test (owner's mailbox):**
+```
+RoleName                GrantedPermissions  AllowedResourceScope  ScopeType             InScope
+--------                ------------------  --------------------  ---------             -------
+Application Mail.Read   Mail.Read           Gojo-OwnerMailbox     CustomRecipientScope  True
+```
+- **Evidence — negative test (real colleague's mailbox, adnan.khan@):**
+```
+RoleName                GrantedPermissions  AllowedResourceScope  ScopeType             InScope
+--------                ------------------  --------------------  ---------             -------
+Application Mail.Read   Mail.Read           Gojo-OwnerMailbox     CustomRecipientScope  False
+```
+- The first attempt at the negative test used a placeholder address and returned "object not found" — which proves nothing. A meaningful `False` needs a mailbox that exists. Re-run against a real colleague: `InScope: False`. **`Mail.Read` was scoped to one mailbox without ever being tenant-wide.**
