@@ -21,7 +21,26 @@ BUDGET_EXHAUSTED = (
     "agent steps. Nothing was changed. Try narrowing the question."
 )
 
-ACTION_WORDS = ("send", "reply", "create", "update", "close", "delete", "assign")
+# Substring-matched, so phrases are chosen against noun collisions: bare
+# "draft"/"email" would misroute "the draft agreement" and "any email from
+# Amy?". Misroute is a UX error, never a safety one - the gather path cannot
+# write and the act path cannot act without approval (ADR 0011) - but the
+# read questions are the product, so they get the benefit of the doubt.
+ACTION_WORDS = (
+    "send",
+    "reply",
+    "create",
+    "update",
+    "close",
+    "delete",
+    "assign",
+    "compose",
+    "draft an email",
+    "draft a mail",
+    "draft a message",
+    "write an email",
+    "write a mail",
+)
 
 
 def new_turn(state: GojoState) -> dict:
