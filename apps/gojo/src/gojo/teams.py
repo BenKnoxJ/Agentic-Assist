@@ -25,7 +25,12 @@ and validating the right one (5.2).
 import asyncio
 import logging
 
-from microsoft_agents.activity import Activity, ActivityTypes, ConversationReference
+from microsoft_agents.activity import (
+    Activity,
+    ActivityTypes,
+    Attachment,
+    ConversationReference,
+)
 from microsoft_agents.hosting.core import (
     AgentApplication,
     ApplicationOptions,
@@ -252,6 +257,66 @@ def build_agent_app(
 
         message = (context.activity.text or "").strip()
         thread_id = context.activity.conversation.id
+
+        # --- TEMPORARY: step-5 T1 card spike. Removed once the submit payload
+        # shape is recorded as the T7 test fixture (build-log Session 6).
+        if context.activity.value:
+            logger.info(
+                "SPIKE submit: value=%r text=%r channel_data=%r",
+                context.activity.value,
+                context.activity.text,
+                context.activity.channel_data,
+            )
+            await context.send_activity(
+                f"Card submit received. value={context.activity.value!r}"
+            )
+            return True
+        if message.startswith("/cardspike"):
+            parts = message.split()
+            version = parts[1] if len(parts) > 1 else "1.5"
+            card = {
+                "type": "AdaptiveCard",
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "version": version,
+                "body": [
+                    {
+                        "type": "TextBlock",
+                        "text": f"Card spike — schema {version}",
+                        "weight": "Bolder",
+                        "wrap": True,
+                    },
+                    {
+                        "type": "TextBlock",
+                        "text": "If this renders and the buttons work, tap one.",
+                        "wrap": True,
+                    },
+                ],
+                "actions": [
+                    {
+                        "type": "Action.Submit",
+                        "title": "Approve",
+                        "data": {"gojo_action": "approve", "action_id": f"spike-{version}"},
+                    },
+                    {
+                        "type": "Action.Submit",
+                        "title": "Reject",
+                        "data": {"gojo_action": "reject", "action_id": f"spike-{version}"},
+                    },
+                ],
+            }
+            await context.send_activity(
+                Activity(
+                    type=ActivityTypes.message,
+                    attachments=[
+                        Attachment(
+                            content_type="application/vnd.microsoft.card.adaptive",
+                            content=card,
+                        )
+                    ],
+                )
+            )
+            return True
+        # --- end TEMPORARY spike ---
 
         # Commands are answered on this turn and never reach an agent. They
         # are fast, so there is no acknowledgement and no proactive delivery.
