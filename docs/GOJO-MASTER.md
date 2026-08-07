@@ -1,6 +1,6 @@
 # Gojo — Master Document
 
-**Version:** 3.6 — build in progress
+**Version:** 3.7 — build in progress
 **Date:** 7 August 2026
 **Owner:** Ben Knox (GitHub: `BenKnoxJ`)
 **Repo:** `BenKnoxJ/Agentic-Assist` (private monorepo)
@@ -13,6 +13,8 @@
 > **What changed in v3.2:** memory promoted from a folder of markdown to a **three-layer architecture** (§9.1), and retrieval moved from *deferred* to **committed and sequenced as build step 6** (§12) — Postgres 17 + pgvector + Voyage. §13 item 1 answered by measurement. §18 added to stop document drift.
 >
 > **What changed in v3.3:** **build step 2 is complete** — Gojo answers from Teams on a phone, behind JWT validation and a single-user allow-list. **Steps 3 and 4 are swapped** (ADR 0007): persistence, sessions and systemd now come before connectors, because using the system showed continuity and surviving a restart matter before tenant-wide mail permissions do.
+>
+> **What changed in v3.7:** **step 5's build is code-complete** — the approval gate (ADR 0011): agents propose, only the owner approves via `interrupt()` (restart-survivable, card or yes/no), only deterministic code executes the approved bytes under a sha256 check, with an actions ledger providing exactly-once and audit. §13 item 9 resolved by dissolving it — no agent holds a write tool at all; item 5 answered (Adaptive Cards render at schema 1.5, submits echo our data verbatim). THREAT-MODEL §4 re-argued for writes as §7 required. The RBAC write grants (`Mail.ReadWrite`, `Mail.Send`) and the live ladder remain — property 6 becomes true when they land.
 >
 > **What changed in v3.6:** **build step 4 is complete** — Graph mail + Jira read connectors behind RBAC-scoped permissions (`Mail.Read` proven scoped to one mailbox by a recorded negative test, never tenant-wide), an in-process MCP tool layer with explicit built-in denial, `docs/THREAT-MODEL.md` (fifth owned document, §18), and the LangSmith reasoning span (§13 item 8 answered). Two things live use found on day one: "find Amy's email" needed mailbox *search*, built same-day; and **the service had never traced** — systemd's `EnvironmentFile` beats `Environment=`, so tracing was silently off in production since first boot (§9.2, fixed). The one-sentence test (§1.1) passed on real work.
 >
@@ -510,10 +512,22 @@ Six properties, deliberately no more. This exists to stop scope creep dressed as
 
 **Carried debt from step 3: cleared.** All five items closed on 4 August 2026 — explicit `recursion_limit` plus a state budget field, a wall-clock timeout on graph invocation, structured logging with per-turn ids, the README, and `runner.py` on `ClaudeSDKClient`. Covered by `test_guards.py`.
 
-**Open — carry into step 5:**
-- The §13 item 9 decision (routed `classify` vs `can_use_tool` gating) is due now — the gate is what step 5 builds.
-- ADR 0010's inherited obligation: recovery replay is only idempotent while tools are read-only; write tools need idempotency keys before they exist.
-- THREAT-MODEL.md §7: re-argue the containment case before granting `Mail.Send`.
+**Step-5 build position (7 Aug): code-complete, tested, deployed-pending-grant.**
+
+| Piece | State |
+|---|---|
+| Card spike (§13 item 5) | ✅ Schema 1.5 renders; submit echoes `data` verbatim — measured from the phone |
+| Write surface on the connector | ✅ `create_draft`, `create_reply_draft`, `send_draft(id)`; callable only by the deterministic executor |
+| Actions ledger | ✅ Exactly-once + audit; two-phase send; boot warning on approved-but-unfinished rows |
+| Sukuna composes | ✅ Read tools only, strict-JSON proposal, `ABSTAIN` fail-safe; shared session read, never written back |
+| The gate | ✅ `interrupt()` in its own node; restart-survivable (test-pinned); byte-equality of approved vs executed; double-resume refused |
+| Teams + `/chat` protocol | ✅ Card taps and yes/no; loud free-text cancel; stale-card refusal; approval turns record debt before resuming |
+| `/new`, `/compact`, recovery | ✅ Gate-aware: /new cancels first, /compact refuses, recovery re-delivers the prompt (the FAILED-delivery hole was reproduced by test, then fixed) |
+| Docs | ✅ ADR 0011; THREAT-MODEL §4 re-argued for writes (§7 satisfied); runbook write-role stanzas |
+| **RBAC write grants** | ⬜ `Application Mail.ReadWrite` + `Mail.Send`, one PIM session — the only step before the live ladder |
+| **Live ladder** | ⬜ Ten steps, drafts rung first, send strictly last. Property 6 true when it passes |
+
+**Open — carry past step 5:**
 - Small: whether `@traceable` on tool bodies nests tool spans under the SDK span (§13 item 8 residue).
 - Owner-stated target workflows for the backlog (7 Aug): full-historic "what have I missed" sweeps, per-customer comms summaries documented — these drive calendar/SharePoint/Teams-message connectors (§8.2) and step 6 retrieval. Teams chat reading needs Microsoft's protected-API approval — submit early, it is calendar time. `Files.Read.All` stays refused until scopable (§8.4).
 
@@ -624,11 +638,11 @@ Steps 2–5 produce the corpus as a side effect of use. Step 6 then builds retri
 2. ~~**Current Agents SDK version.**~~ **Answered 4 August 2026: 1.3.0**, verified against PyPI and pinned. See §5.1.
 3. **`MemoryMax` sizing.** Start 5–6 GiB, load-test.
 4. **Agent SDK cache TTL** — flagged as a documentation gap in Anthropic's own repo. Verify against response metadata.
-5. **Adaptive Cards schema version** Teams currently renders — five-minute empirical test.
+5. ~~**Adaptive Cards schema version** Teams currently renders.~~ **Answered 7 August 2026: 1.5 renders**, buttons work, and `Action.Submit` echoes our `data` payload verbatim as `activity.value` with empty text. Measured live from a phone (build-log Session 6).
 6. **Jira and Zoho API access** at Conversant's licence tier — account verification, not research.
 7. **Graph granular file permissions** — whether a `Files.Read.All` equivalent to `Sites.Selected` exists.
 8. ~~**Bridging Agent SDK traces into LangSmith.**~~ **Answered 7 August 2026:** a `@traceable` span around the runner's SDK exchange works — measured live, agent nodes now carry a `claude-agent-sdk` child with cost/turns/session-id (§9.2). Still open, smaller: whether `@traceable` on the in-process tool bodies would nest tool spans under it (the turn-id contextvar does propagate there, so likely — untested). The measurement also exposed that the service had never traced (unit-vs-EnvironmentFile precedence, §9.2) — fixed same day.
-9. **Agent-first vs routed control flow — decide at step 5, not before.** §6.1 says the orchestrator makes no decisions; in practice `classify` substring-matches seven verbs, which is a poor proxy for "this will change something" ("check if Dave replied" is read-only and contains no action word; "update my notes" is read-only and contains one). The Agent SDK exposes `can_use_tool`, an async Allow/Deny callback fired before any tool runs — a gate at the moment a write is actually attempted rather than guessed from phrasing. That is likely the better design, and it is a **step 5** decision because the gate is what step 5 builds. Nothing in steps 3 and 4 is wasted either way. Raised 4 August 2026 while building continuity; parked deliberately.
+9. ~~**Agent-first vs routed control flow.**~~ **Resolved 7 August 2026 by dissolving the question (ADR 0011):** no agent holds a write tool, so neither classification nor `can_use_tool` is a safety mechanism. Sukuna composes a strict-JSON proposal with read-only tools; `interrupt()` holds the human wait; deterministic code executes approved bytes. `classify` stays routing-only — a misroute is a UX error by construction. `can_use_tool` is recorded in ADR 0011 as the evolution path if Sukuna ever needs multi-step write autonomy.
 10. **uvloop vs the Agent SDK — root cause.** ADR 0005 pins `loop="asyncio"` because SDK calls fail deterministically under uvloop. The mechanism is inferred (anyio subprocess handling), not established. Revisit if the SDK changes transport.
 
 ## 14. Working principles
@@ -704,4 +718,4 @@ Five artifacts now describe this project. Without a rule they drift — and they
 
 ---
 
-**Next action:** build step 5 — the approval gate and write scopes. Decide §13 item 9 first (routed `classify` vs `can_use_tool` — the gate's shape depends on it), then `interrupt()` + `Command(resume=...)` in the graph, a separate write-tool server for Sukuna, idempotency keys (ADR 0010's inherited obligation), and only then the `Mail.Send` RBAC grant — same one-mailbox scoping as read, and THREAT-MODEL.md §7 must be re-argued before the grant exists. Owner's staging preference: draft-creation (writes to Drafts, owner sends manually) is an acceptable first rung before send-with-approval.
+**Next action:** the step-5 RBAC write grants and the live ladder. Owner runs `infra/graph-mail-rbac.ps1` steps 6–9 (one PIM session — `Application Mail.ReadWrite` + `Mail.Send`, nothing in Entra, negative tests re-run and recorded verbatim), then the ten-step live ladder in the step-5 plan: drafts rung first (compose → card → approve → draft in Drafts), decline/cancel/double-tap/restart checks, send rung strictly last with the replay check. Property 6 is true when the ladder passes. After that: the fortnight of real use (§11), with the owner's target workflows and step 6 as the drivers.

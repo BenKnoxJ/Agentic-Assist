@@ -58,3 +58,22 @@ Test-ServicePrincipalAuthorization -Identity 'Gojo' -Resource $Mailbox | Format-
 
 # Note: permission changes cache for 30 minutes to 2 hours. The Test cmdlet
 # bypasses the cache, so trust it over live Graph calls when verifying.
+
+# --- Step 5: the write roles (ADR 0011). Run only AFTER docs/THREAT-MODEL.md
+# §4 has been re-argued for writes - its §7 makes that a precondition.
+# Same scope object, same union hazard: nothing is EVER granted in Entra.
+
+# 6. Drafts rung: create/update messages in the owner's mailbox only.
+New-ManagementRoleAssignment -App $SpObject `
+  -Role 'Application Mail.ReadWrite' -CustomResourceScope $ScopeName
+
+# 7. Send rung: send as the owner's mailbox only.
+New-ManagementRoleAssignment -App $SpObject `
+  -Role 'Application Mail.Send' -CustomResourceScope $ScopeName
+
+# 8. Prove BOTH, both ways. Positive (owner) must be True...
+Test-ServicePrincipalAuthorization -Identity 'Gojo' -Resource $Mailbox | Format-Table
+
+# 9. ...and the negative (a real colleague's mailbox - substitute one that
+#    exists; "not found" proves nothing) must show False for every role.
+# Test-ServicePrincipalAuthorization -Identity 'Gojo' -Resource 'someone.real@conversant.technology' | Format-Table

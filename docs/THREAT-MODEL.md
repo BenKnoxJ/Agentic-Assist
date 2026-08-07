@@ -78,20 +78,36 @@ compromise of the VPS, and multi-user isolation (there is no second user).
 
 ## 4. The containment argument (prompt injection via mail)
 
-Assume A1 succeeds completely: a crafted email fully steers Megumi.
-**The worst available outcome today is a misleading answer to the owner**,
-because:
+**Re-argued 7 August 2026 for step 5 (ADR 0011), as §7 requires before any
+write scope exists.** The system can now draft and send mail — so the
+argument no longer rests on "writes don't exist", but on the separation of
+powers: **agents propose, only the owner approves, only deterministic code
+executes.**
 
-1. Megumi's process denies every write-capable and network-capable
-   built-in tool (B3) — steering the agent acquires no Bash, no file
-   access, no WebFetch.
-2. Its only tools are the two read-only fetchers; tool acquisition beyond
-   them is blocked twice (allow-list + strict MCP config).
-3. Output goes to exactly one place: the owner, in Teams (B1). There is no
-   cross-user surface to pivot to.
-4. Write capability does not exist anywhere in the system until step 5,
-   and arrives only behind `interrupt()` — with its own re-argued version
-   of this section as a precondition.
+Assume A1 succeeds completely: a crafted email fully steers whichever
+agent reads it.
+
+1. **A fully-fooled Megumi still only misleads.** Unchanged from step 4:
+   built-ins denied (B3), read-only tools, output goes only to the owner.
+2. **A fully-fooled Sukuna produces only a proposal.** It holds the same
+   read-only tools; its entire output is one strict-JSON action the owner
+   reads verbatim before anything happens. No write tool exists in the
+   process for any agent to hold.
+3. **Approval sees the exact bytes, and the exact target.** The prompt
+   renders the canonical payload the ledger will execute (sha256-checked at
+   execution), and for replies leads with the target message's sender and
+   subject **fetched deterministically by id via the connector** — never
+   the agent's description of them.
+4. **After approval, no model touches the action.** `actions.execute`
+   replays the approved bytes verbatim; the ledger makes it exactly-once
+   (two-phase send: the draft id is persisted before the send POST, so a
+   crash-replay re-sends the same draft, which Graph refuses once sent).
+5. **The drafts rung contains even a fooled approval**: a draft is an
+   inspectable artifact in the owner's own Drafts folder — nothing leaves
+   the mailbox until they press send in Outlook.
+6. **The send rung is bounded by** exact-consent approval (bare yes/no or
+   the card; "yes but…" cancels loudly), one-mailbox RBAC on the sending
+   identity, and the audit ledger.
 
 ## 5. Residual risks — stated, not hidden
 
@@ -109,6 +125,17 @@ because:
 - **LangSmith (EU) holds prompt and mail excerpts** — accepted and signed
   off in §9.2; listed because it is real exposure, not because it is
   unmitigated.
+- **The sharpest step-5 edge: injected mail steering a reply target.** An
+  injection can influence *which* message id Sukuna proposes replying to.
+  The mitigation is §4.3's deterministic target verification rendered first
+  in the prompt; the residual is **human attention on a phone screen** —
+  truncation and hurry are real. The drafts rung absorbs this entirely
+  (the mis-targeted draft sits inspectable in Drafts); the send rung relies
+  on the owner reading the verified target before tapping Approve.
+- **A fooled approval is still an approval.** The gate proves consent, not
+  wisdom — an owner who approves a plausible-looking bad action has been
+  social-engineered through a working control. Exact-consent parsing and
+  the loud SEND banner narrow, not close, this.
 
 ## 6. Control mapping
 
@@ -126,13 +153,22 @@ because:
 | Poisoned dependency chain (checkpointer CVEs) | Version floors pinned in lockfile | `pyproject.toml`, §6.1 | CI `pip-audit`; pins listed §6.1 |
 | Content accumulating in journald | Log lines carry counts/ids/shapes, never content | `agents/tools.py` | `test_tools.py` handlers + code review |
 | Runaway agent (§9.3 #1) | Wall clock + recursion limit + per-turn agent budget | `orchestrator.py` | `test_guards.py` |
+| A1/A2: injection → mail write | Propose/approve/execute separation; no write tool held by any agent | `agents/sukuna.py`, `orchestrator.py` gate, `actions.py` | `test_orchestrator_gate.py` (interrupt, reject, byte-equality); `test_sukuna.py` (read tools only) |
+| Approved bytes ≠ executed bytes | sha256 check at execution; deterministic replay | `actions.execute` | `test_actions.py` hash-mismatch fail-safe + byte-equality test |
+| Double execution / double send | Ledger exactly-once; two-phase send by persisted draft id | `actions.py` | `test_actions.py` replay tests; live replay check — **pending, ladder ⑨** |
+| Mis-targeted reply via injection | Deterministic target fetch by id, rendered first in the prompt | `orchestrator.sukuna`, `approval.py` | `test_orchestrator_gate.py` target-verification test; `test_approval.py` ordering test |
+| Stale/double approval | `resume_gate_locked` pending re-check under its own lock; action_id match on card taps | `orchestrator.py`, `approval.py`, `teams.py` | double-resume + stale-card tests; live double-tap — **pending, ladder ⑤** |
+| Approved action lost in a crash | Debt recorded before every resume attempt; boot warning on approved-but-unfinished rows; recovery re-delivers the prompt | `teams.py`, `api.py` lifespan, `recovery.py` | `test_recovery.py` gate branches (the FAILED-delivery hole was reproduced by test before the fix) |
+| A3: leaked secret sends mail | `Mail.Send`/`Mail.ReadWrite` RBAC-scoped to one mailbox, nothing in Entra | `infra/graph-mail-rbac.ps1` | Negative tests for both write roles — **pending, ladder ⑧** |
 
 ## 7. Review triggers
 
-Re-argue §4 **before** any of: granting `Mail.Send` or any write scope
-(step 5), adding a connector that returns third-party content, widening
-the allow-list beyond one user, or removing any entry from
-`DISALLOWED_BUILTIN_TOOLS`. Step 5's ADR must cite this section.
+§4 was re-argued for step 5's write scopes on 7 August 2026 (ADR 0011),
+as this section required. Re-argue it again **before** any of: giving any
+agent a write tool (the ADR 0011 `can_use_tool` evolution path), adding a
+write connector beyond mail, adding a connector that returns third-party
+content, widening the allow-list beyond one user, or removing any entry
+from `DISALLOWED_BUILTIN_TOOLS`.
 
 ## Related
 - ADR 0010 — the tool mechanism these boundaries wrap.

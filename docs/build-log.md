@@ -200,3 +200,34 @@ Application Mail.Read   Mail.Read           Gojo-OwnerMailbox     CustomRecipien
 Step 4 complete · 139 tests · RBAC-scoped mail proven by negative test, never tenant-wide · two read connectors + whole-mailbox KQL search · in-process MCP tools with built-ins explicitly denied · THREAT-MODEL.md with live evidence · LangSmith reasoning span measured · service tracing restored after discovering it had never worked · sentence test passed on real work (Rowntree/Amy) · ADR 0010.
 
 **Next session:** step 5 — decide §13 item 9 (gate shape), then interrupt() approval gate, Sukuna's write server, idempotency keys, Mail.Send RBAC grant last, re-arguing THREAT-MODEL.md §7 first. Draft-creation acceptable as the first rung.
+
+## Session 6 — Step 5: the approval gate
+
+**Date:** 2026-08-07
+**Goal:** Build step 5 in full — drafts AND send behind human approval, Adaptive Card buttons, reply drafts — sequenced so drafts are demoable first. Same-day continuation of Session 5.
+**Outcome:** Code-complete and pushed: 211 tests. Grant + live ladder remain.
+
+### 1. Plan, unprimed adversarial review, and the two blockers it caught
+- Plan drafted from a two-agent exploration (turn lifecycle map + installed-library verification with empirical probes). The unprimed review verdict: "executable with fixes" — two blockers, six majors, all incorporated before a line of code.
+- **B1:** the Teams lock plan was either a fast-path-killing self-block or a double-tap TOCTOU (`Command(resume=…)` on a non-paused thread silently returns the previous final state — verified empirically). Fix: exact lock spans + the resume re-checks pending under its own lock.
+- **B2:** crash windows defeated the ledger's idempotency story — a fast-path approval could vanish silently; a crash between draft-create and the executed mark could double-send. Fix: two-phase send by persisted draft id + approval turns always record debt before the resume attempt.
+- Also verified and designed around: `aupdate_state` with values **blinds `snapshot.interrupts` while the gate stays resumable** (guards key on `snapshot.next`; `/compact` refuses; `/new` checks first); a resume can run INTO the gate (crash mid-compose) and must deliver the prompt, not FAILED.
+
+### 2. Card spike — §13 item 5 answered in one tap
+- `/cardspike` from the phone: **schema 1.5 renders**, buttons work, `Action.Submit` arrives as `activity.value = {'gojo_action': 'approve', 'action_id': 'spike-1.5'}` with empty text. That recorded payload is now the approval-protocol test fixture.
+
+### 3. Build — TDD, 139 → 211 tests, one commit per piece
+- Connector: opaque message `id` through the read path + `get_message(id)` (the deterministic reply-target check); `create_draft` / `create_reply_draft` (createReply then PATCH body — comment semantics is a live-verify item) / `send_draft(id)`.
+- `actions.py`: strict `ActionProposal` (unknown fields are a parse failure), `parse_proposal` never raises, the ledger with the status machine, `execute()` — sha256 check, exactly-once, two-phase send. The crash-replay test rolls status back to `draft_created` and proves the same draft id is re-sent, never a second copy.
+- `sukuna.py`: composes with the gather server's read tools only; one JSON object out or ABSTAIN. Classify gained compose *phrases* ("draft an email", "compose"…) — bare "draft"/"email" would misroute "the draft agreement" and "any email from Amy?".
+- Orchestrator: `sukuna → gate → execute → respond`; `interrupt()` first statement in its own node (re-execution on resume is verified 1.2.10 behaviour); `resume_gate_locked` with the pending re-check; `gate_pending` keyed on `next` OR `interrupts`. Gate survival across a saver reopen is test-pinned — approval can arrive at a process that did not exist when the question was asked.
+- Teams: card taps route purely through gate logic; free-text cancel is loud and in-lock, then the message runs normally; stale card taps refused by action_id. `/chat` speaks the same protocol, so the whole loop rehearses over curl.
+- Recovery: the FAILED-delivery hole on a paused gate was **reproduced by test first** (both tests delivered FAILED before the fix), then fixed both ways (paused thread → re-deliver prompt; resume-into-gate → prompt).
+- **Gotcha (live, mid-suite):** an api-level gate test reached `actions.write_client()`, built a client from the REAL `.env` and made a live Graph call from pytest — review finding 4 manifesting exactly as predicted. conftest now pins both factory modules to unconfigured settings unconditionally; the deploy-time test run can never touch the network again.
+
+### 4. Docs before the grant (THREAT-MODEL §7 satisfied)
+- ADR 0011: propose/approve/execute separation; §13 item 9 resolved by dissolving it (no agent holds a write tool; `can_use_tool` recorded as the evolution path); supersedes the master doc's write-tool-server sketch.
+- THREAT-MODEL §4 re-argued for writes: fooled agents can only mislead or propose; approval sees exact bytes + deterministically fetched reply targets; drafts rung contains fooled approvals to an inspectable artifact; send bounded by exact consent + one-mailbox RBAC + the ledger. New residual risks stated: reply-target steering vs human attention on a phone; a fooled approval is still an approval.
+- Runbook gained the two write-role stanzas (steps 6–9), master doc to v3.7.
+
+**Next session:** owner PIM session (runbook steps 6–9, both negative tests verbatim), then the ten-step live ladder — drafts rung first, send strictly last with the replay check. Property 6 true when it passes.
