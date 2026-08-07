@@ -672,7 +672,7 @@ Two repos: private working repo (permanent, full history including failures) and
 
 ## 18. Which document owns which fact
 
-Four artifacts now describe this project. Without a rule they drift — and they have: ADR 0003 claimed `.gitignore` patterns that were never in the file, §11.2 carried the old repo name and the wrong ADR path, and §11.0's debt list stayed stale across three sessions. All four were found in a single audit on 4 August 2026.
+Five artifacts now describe this project. Without a rule they drift — and they have: ADR 0003 claimed `.gitignore` patterns that were never in the file, §11.2 carried the old repo name and the wrong ADR path, and §11.0's debt list stayed stale across three sessions. All four then existing were found in a single audit on 4 August 2026.
 
 **The rule: every fact lives in exactly one document. The others link to it.**
 
@@ -682,6 +682,7 @@ Four artifacts now describe this project. Without a rule they drift — and they
 | **docs/decisions/** (ADRs) | One decision each, with the reasoning at the time — including superseded ones | Current state; anything that changes after the decision |
 | **docs/build-log.md** | What was done, when, and what broke. Chronological, append-only | Decisions (they get an ADR); architecture |
 | **[docs/VPS.md](VPS.md)** | The box, services, deploy and recovery, secrets locations, build-environment tooling | Architecture, decisions, or narrative history |
+| **[docs/THREAT-MODEL.md](THREAT-MODEL.md)** | Assets, trust boundaries, adversary assumptions, control-to-threat mapping and its evidence pointers | Build sequence, operational commands, decision reasoning (links to ADRs) |
 
 **Two consequences worth stating.** A decision recorded in an ADR is not repeated here — this document links to it. And when this document and an ADR conflict, **this document wins** (see the header), because ADRs are point-in-time and this is current.
 
