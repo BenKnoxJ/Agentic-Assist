@@ -142,7 +142,7 @@ async def test_megumi_does_not_cap_turns_below_the_session_history(monkeypatch) 
     seen = {}
 
     async def fake_run_agent(prompt, system_prompt="", allowed_tools=None,
-                             max_turns=None, resume=None):
+                             max_turns=None, resume=None, mcp_servers=None):
         seen["max_turns"] = max_turns
         return AgentResult(text="ok", session_id="s1")
 

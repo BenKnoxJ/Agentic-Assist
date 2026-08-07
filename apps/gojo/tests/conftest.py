@@ -18,3 +18,19 @@ def fresh_thread_locks():
     orchestrator._thread_locks.clear()
     yield
     orchestrator._thread_locks.clear()
+
+
+@pytest.fixture(autouse=True)
+def fresh_tool_clients():
+    """Drop cached connector clients before and after every test.
+
+    Same class of hazard as the locks above, plus one more: pytest runs on
+    the box with the real .env present (VPS.md deploy sequence), so a client
+    cached from one test's settings must never leak into another - and no
+    test may inherit a client built from real credentials.
+    """
+    from gojo.agents import tools
+
+    tools.reset_clients()
+    yield
+    tools.reset_clients()

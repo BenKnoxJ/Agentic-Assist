@@ -18,8 +18,15 @@ def gather(monkeypatch: pytest.MonkeyPatch):
     """Records prompts and returns a predictable session id per call."""
     calls: list[dict] = []
 
-    async def fake(message: str, resume: str | None = None, summary: str = "") -> AgentResult:
-        calls.append({"message": message, "resume": resume, "summary": summary})
+    async def fake(
+        message: str,
+        resume: str | None = None,
+        summary: str = "",
+        use_tools: bool = True,
+    ) -> AgentResult:
+        calls.append(
+            {"message": message, "resume": resume, "summary": summary, "use_tools": use_tools}
+        )
         return AgentResult(text=f"reply {len(calls)}", session_id=f"session-{len(calls)}")
 
     monkeypatch.setattr(orchestrator, "gather", fake)
@@ -81,6 +88,9 @@ async def test_compact_summarises_then_starts_a_fresh_session(tmp_path, gather) 
 
     # The summarisation call resumed the live session...
     assert gather[1]["resume"] == "session-1"
+    # ...tool-free: a summary must not spend tool calls or fetch more
+    # untrusted content mid-summary (step 4).
+    assert gather[1]["use_tools"] is False
     # ...and the turn after it started fresh, carrying the summary instead.
     assert gather[2]["resume"] is None
     assert gather[2]["summary"] == "reply 2"
@@ -102,7 +112,7 @@ async def test_failed_summary_leaves_the_conversation_intact(
         graph = orchestrator.build_graph(checkpointer=cp)
         await send(graph, "first")
 
-        async def empty(message, resume=None, summary=""):
+        async def empty(message, resume=None, summary="", use_tools=True):
             return AgentResult(text="", session_id=None)
 
         monkeypatch.setattr(commands, "gather", empty)

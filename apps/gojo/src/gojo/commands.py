@@ -98,7 +98,9 @@ async def _compact(graph, thread_id: str) -> str:
     if not session_id:
         return COMPACT_EMPTY
 
-    result = await gather(SUMMARISE, resume=session_id)
+    # Tool-free on purpose: a summary must not spend tool calls or hand the
+    # summariser a way to fetch more untrusted content mid-summary (step 4).
+    result = await gather(SUMMARISE, resume=session_id, use_tools=False)
     if not result.text:
         # Leave state untouched: a failed summary must not silently discard
         # the conversation it was meant to preserve.
