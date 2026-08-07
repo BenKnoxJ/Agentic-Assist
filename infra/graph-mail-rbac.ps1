@@ -21,13 +21,18 @@
 # Works in pwsh on Linux with device-code sign-in.
 
 $AppId    = '2b6bad70-f62b-4148-9138-20c1d71319ca'   # Application (client) ID
-$SpObject = '3ec4ee04-75f8-4f45-8b8c-04809564771b'   # Service principal Object ID
+$SpObject = 'ad389ad2-5beb-4738-aa36-92052bc365e8'   # Service principal Object ID
 $Mailbox  = 'ben.knox-johnston@conversant.technology'
 $ScopeName = 'Gojo-OwnerMailbox'
 
 # Both IDs come from Enterprise applications, NOT App registrations - that
 # page shows different values and using them produces a valid-looking but
-# wrong assignment.
+# wrong assignment. Measured 7 Aug 2026: this file originally carried the
+# App registration's Object ID and New-ServicePrincipal rejected it with
+# AADServicePrincipalNotFound - a loud failure, but only because the ID was
+# absent entirely; the warning above still matters. Fastest route to the
+# right value: App registrations -> the app -> Overview -> "Managed
+# application in local directory" link -> Object ID on THAT page.
 
 Connect-ExchangeOnline
 
